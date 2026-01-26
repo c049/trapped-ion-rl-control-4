@@ -1,6 +1,5 @@
 
 
-# Author: Ben Brock 
 # Created on May 02, 2023 
 
 #%%
@@ -10,7 +9,7 @@ import matplotlib.pyplot as plt
 
 import os
 import sys
-# add quantum-control-rl dir to path for subsequent imports
+# add project dir to path for subsequent imports
 #sys.path.append(os.path.dirname(os.path.dirname(os.getcwd())))
 
 import logging

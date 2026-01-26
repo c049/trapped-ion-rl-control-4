@@ -3,7 +3,6 @@ Compatibility shim for some versioning
 
 Created on Tue Aug 25 14:04:38 2020
 
-@author: Henry Liu
 """
 from distutils.version import LooseVersion
 

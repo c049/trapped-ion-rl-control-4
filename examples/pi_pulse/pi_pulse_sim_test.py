@@ -1,4 +1,3 @@
-# Author: Ben Brock 
 # Created on May 03, 2023 
 #%%
 import qutip as qt

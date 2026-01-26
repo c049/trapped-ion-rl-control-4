@@ -3,7 +3,6 @@
 """
 Created on Fri Jan  1 19:22:02 2021
 
-@author: Vladimir Sivak
 """
 import pickle
 import socket

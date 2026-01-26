@@ -128,3 +128,6 @@ logdir/
 **/outputs/
 **/checkpoint/
 
+# Keep example outputs for this repo
+!examples/trapped_ion_cat/outputs/
+!examples/trapped_ion_cat/outputs/**

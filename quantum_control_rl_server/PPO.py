@@ -2,7 +2,6 @@
 """
 Created on Wed Mar  4 12:24:37 2020
 
-@author: Vladimir Sivak
 """
 import os
 import sys

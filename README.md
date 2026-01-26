@@ -1,38 +1,66 @@
 # Trapped-Ion RL Control
 
-This repository extends the model-free quantum control framework with a trapped-ion bosonic-mode environment and cat-state targets.
+This repository provides a reinforcement-learning control server with a TCP/IP client interface for quantum-control experiments and simulations. It includes multiple example environments (pi-pulse, OCT-style pi-pulse, and trapped-ion cat-state preparation), along with plotting and analysis scripts.
 
-This code was used in the following publications:
-
-[**Model-Free Quantum Control with Reinforcement Learning**; Phys. Rev. X 12, 011059 (2022)](https://journals.aps.org/prx/abstract/10.1103/PhysRevX.12.011059)
-
-[**Real-time quantum error correction beyond break-even**; Nature 616, 50–55 (2023)](https://www.nature.com/articles/s41586-023-05782-6)
-
-[**High-fidelity, frequency-flexible two-qubit fluxonium gates with a transmon coupler**; arXiv:2304.06087 (2023)](https://arxiv.org/abs/2304.06087)
+## Project layout
+- `quantum_control_rl_server/`: core RL server code, PPO training, environment wrappers, and TCP/IP utilities.
+- `examples/pi_pulse/`: baseline pi-pulse example (training server + client + analysis).
+- `examples/pi_pulse_oct_style/`: OCT-style pi-pulse variant (training server + client + analysis).
+- `examples/trapped_ion_cat/`: trapped-ion cat-state environment, training server, client, and plotting.
+- `examples/trapped_ion_cat/outputs/`: saved plots and artifacts (included in this repo).
 
 ## Requirements
-Requires a variety of packages, but for ease of use one should create the conda environment defined in qcrl-server-tf240.yml.  See the installation section for more details.  The included qcrl-server environment uses tensorflow v2.4.0 and tf-agents v0.6.0, which has been tested to work with CUDA v11.0 and cudnn v8.0.5 for GPU acceleration.  Without CUDA set up, this package will still work using the CPU, but this may limit performance depending on the application.
+The project was tested with the conda environment defined in `qcrl-server-tf240.yml` (TensorFlow 2.4.0 and TF-Agents 0.6.0). CPU-only setups work, but training may be slower.
 
 ## Installation
-To install this package, first clone this repository.  This package should be used with the conda environment defined in qcrl-server-tf240.yml.  To create this environment from the file, open an anaconda cmd prompt, cd into the repo directory, and run:
+Create and activate the conda environment:
 ```sh
 conda env create -f qcrl-server-tf240.yml
-```
-To install this package into this conda environment qcrl-server, first activate the environment using
-```sh
 conda activate qcrl-server
 ```
-then cd into the repo directory and run:
+Install the package in editable mode:
 ```sh
 pip install -e .
 ```
 
-## CUDA Compatibility
-
-The qcrl-server conda environment has been tested to work with CUDA v11.0 and cudnn v8.0.5. 
-
 ## Running the examples
+Open two terminals, activate the environment in both, and run the training server and client in the same example directory.
 
-Open two consoles, activate qcrl-server in both, and cd into the directory of the example you want to run in both (pi_pulse or pi_pulse_oct_style).  In one console run *_training_server.py, and in the other run *_client.py.
+Pi-pulse:
+```sh
+cd examples/pi_pulse
+python pi_pulse_training_server.py
+```
+In another terminal:
+```sh
+cd examples/pi_pulse
+python pi_pulse_client.py
+```
 
+OCT-style pi-pulse:
+```sh
+cd examples/pi_pulse_oct_style
+python pi_pulse_oct_style_training_server.py
+```
+In another terminal:
+```sh
+cd examples/pi_pulse_oct_style
+python pi_pulse_oct_style_client.py
+```
 
+Trapped-ion cat-state:
+```sh
+cd examples/trapped_ion_cat
+python trapped_ion_cat_training_server.py
+```
+In another terminal:
+```sh
+cd examples/trapped_ion_cat
+python trapped_ion_cat_client.py
+```
+
+## Outputs
+Plots and evaluation artifacts are saved under `examples/trapped_ion_cat/outputs/` (for example: training curves, pulse sequences, fidelity curves, and Wigner function comparisons). These files are tracked in this repository.
+
+## License
+See `LICENSE`.
