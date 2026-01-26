@@ -19,8 +19,8 @@ from quantum_control_rl_server.h5log import h5log
 root_dir = os.getcwd()
 host_ip = "127.0.0.1"
 
-num_epochs = 500
-train_batch_size = 80
+num_epochs = 1500
+train_batch_size = 160
 
 do_evaluation = True
 eval_interval = 20
@@ -30,7 +30,7 @@ learn_residuals = True
 save_tf_style = False
 
 n_steps = 120
-n_segments = 30
+n_segments = 60
 init_phi_r = list(np.zeros(n_segments))
 init_phi_b = list(np.zeros(n_segments))
 init_amp_r = list(np.ones(n_segments))
@@ -136,15 +136,15 @@ PPO.train_eval(
     normalize_observations=True,
     normalize_rewards=False,
     discount_factor=1.0,
-    lr=1.0e-3,
+    lr=3.0e-4,
     lr_schedule=None,
     num_policy_updates=20,
     initial_adaptive_kl_beta=0.0,
     kl_cutoff_factor=0,
-    importance_ratio_clipping=0.1,
+    importance_ratio_clipping=0.2,
     value_pred_loss_coef=0.005,
     gradient_clipping=1.0,
-    entropy_regularization=0,
+    entropy_regularization=1.0e-3,
     log_prob_clipping=0.0,
     eval_interval=eval_interval,
     save_interval=2,
@@ -158,7 +158,7 @@ PPO.train_eval(
     replay_buffer_capacity=15000,
     ActorNet=actor_distribution_network.ActorDistributionNetwork,
     zero_means_kernel_initializer=False,
-    init_action_stddev=0.15,
+    init_action_stddev=0.25,
     actor_fc_layers=(50, 20),
     value_fc_layers=(),
     use_rnn=False,

@@ -25,35 +25,81 @@ client_socket = Client()
 client_socket.connect((host, port))
 
 N_STEPS = 120
-N_SEGMENTS = 30
+N_SEGMENTS = 60
 SEG_LEN = N_STEPS // N_SEGMENTS
 T_STEP = 10.0
 SAMPLE_EXTENT = 3.0
+N_BOSON = 30
+ALPHA_CAT = 2.0
 
-TRAIN_POINTS = select_wigner_points(
-    alpha_cat=2.0,
-    n_boson=20,
+TRAIN_TOPK_STAGE1 = 40
+TRAIN_TOPK_STAGE2 = 80
+TRAIN_TOPK_STAGE3 = 120
+TRAIN_STAGE1_EPOCHS = 200
+TRAIN_STAGE2_EPOCHS = 400
+
+SMOOTH_LAMBDA = 1.0e-2
+SMOOTH_PHI_WEIGHT = 1.0
+SMOOTH_AMP_WEIGHT = 0.2
+
+TRAIN_POINTS_STAGE1 = select_wigner_points(
+    alpha_cat=ALPHA_CAT,
+    n_boson=N_BOSON,
     extent=SAMPLE_EXTENT,
     grid_size=41,
-    top_k=60,
+    top_k=TRAIN_TOPK_STAGE1,
+    cat_parity="even",
+)
+TRAIN_POINTS_STAGE2 = select_wigner_points(
+    alpha_cat=ALPHA_CAT,
+    n_boson=N_BOSON,
+    extent=SAMPLE_EXTENT,
+    grid_size=41,
+    top_k=TRAIN_TOPK_STAGE2,
+    cat_parity="even",
+)
+TRAIN_POINTS_STAGE3 = select_wigner_points(
+    alpha_cat=ALPHA_CAT,
+    n_boson=N_BOSON,
+    extent=SAMPLE_EXTENT,
+    grid_size=41,
+    top_k=TRAIN_TOPK_STAGE3,
     cat_parity="even",
 )
 EVAL_POINTS = select_wigner_points(
-    alpha_cat=2.0,
-    n_boson=20,
+    alpha_cat=ALPHA_CAT,
+    n_boson=N_BOSON,
     extent=SAMPLE_EXTENT,
     grid_size=41,
-    top_k=60,
+    top_k=TRAIN_TOPK_STAGE3,
     cat_parity="even",
 )
 FINAL_POINTS = select_wigner_points(
-    alpha_cat=2.0,
-    n_boson=20,
+    alpha_cat=ALPHA_CAT,
+    n_boson=N_BOSON,
     extent=SAMPLE_EXTENT,
     grid_size=61,
     top_k=120,
     cat_parity="even",
 )
+
+
+def _smoothness_penalty(phi_r, phi_b, amp_r, amp_b):
+    dphi_r = np.diff(phi_r)
+    dphi_b = np.diff(phi_b)
+    damp_r = np.diff(amp_r)
+    damp_b = np.diff(amp_b)
+    phi_pen = 0.5 * (np.mean(dphi_r ** 2) + np.mean(dphi_b ** 2))
+    amp_pen = 0.5 * (np.mean(damp_r ** 2) + np.mean(damp_b ** 2))
+    return SMOOTH_PHI_WEIGHT * phi_pen + SMOOTH_AMP_WEIGHT * amp_pen
+
+
+def _select_train_points(epoch):
+    if epoch < TRAIN_STAGE1_EPOCHS:
+        return TRAIN_POINTS_STAGE1
+    if epoch < TRAIN_STAGE2_EPOCHS:
+        return TRAIN_POINTS_STAGE2
+    return TRAIN_POINTS_STAGE3
 
 done = False
 eval_log_path = os.path.join(os.getcwd(), "eval_fidelity.csv")
@@ -87,10 +133,10 @@ while not done:
             phi_b_final,
             amp_r=amp_r_final,
             amp_b=amp_b_final,
-            n_boson=20,
+            n_boson=N_BOSON,
             omega=2 * np.pi * 0.002,
             t_step=T_STEP,
-            alpha_cat=2.0,
+            alpha_cat=ALPHA_CAT,
             cat_parity="even",
             sample_points=FINAL_POINTS,
             n_shots=0,
@@ -162,7 +208,7 @@ while not done:
         sample_points = EVAL_POINTS
     else:
         n_shots = 0
-        sample_points = TRAIN_POINTS
+        sample_points = _select_train_points(epoch)
 
     reward_data = np.zeros((batch_size))
     fidelity_data = None
@@ -175,10 +221,10 @@ while not done:
                 phi_b[ii],
                 amp_r=amp_r[ii],
                 amp_b=amp_b[ii],
-                n_boson=20,
+                n_boson=N_BOSON,
                 omega=2 * np.pi * 0.002,
                 t_step=T_STEP,
-                alpha_cat=2.0,
+                alpha_cat=ALPHA_CAT,
                 cat_parity="even",
                 sample_points=sample_points,
                 n_shots=n_shots,
@@ -192,15 +238,20 @@ while not done:
                 phi_b[ii],
                 amp_r=amp_r[ii],
                 amp_b=amp_b[ii],
-                n_boson=20,
+                n_boson=N_BOSON,
                 omega=2 * np.pi * 0.002,
                 t_step=T_STEP,
-                alpha_cat=2.0,
+                alpha_cat=ALPHA_CAT,
                 cat_parity="even",
                 sample_points=sample_points,
                 n_shots=n_shots,
             )
+            smooth_pen = _smoothness_penalty(
+                phi_r[ii], phi_b[ii], amp_r[ii], amp_b[ii]
+            )
+            reward_data[ii] -= SMOOTH_LAMBDA * smooth_pen
 
+    reward_data = np.clip(reward_data, -1.0, 1.0)
     R = np.mean(reward_data)
     std_R = np.std(reward_data)
     logger.info("Average reward %.3f", R)
