@@ -9,8 +9,8 @@ import numpy as np
 from quantum_control_rl_server.remote_env_tools import Client
 from trapped_ion_cat_sim_function import (
     trapped_ion_cat_sim,
-    wigner_grid,
-    select_wigner_points,
+    characteristic_grid,
+    prepare_characteristic_distribution,
 )
 
 logger = logging.getLogger("RL")
@@ -32,55 +32,37 @@ SAMPLE_EXTENT = 3.0
 N_BOSON = 30
 ALPHA_CAT = 2.0
 
-TRAIN_TOPK_STAGE1 = 40
-TRAIN_TOPK_STAGE2 = 80
-TRAIN_TOPK_STAGE3 = 120
+TRAIN_POINTS_STAGE1 = 80
+TRAIN_POINTS_STAGE2 = 160
+TRAIN_POINTS_STAGE3 = 240
 TRAIN_STAGE1_EPOCHS = 200
 TRAIN_STAGE2_EPOCHS = 400
 
-SMOOTH_LAMBDA = 1.0e-2
+SMOOTH_LAMBDA = 0.0
 SMOOTH_PHI_WEIGHT = 1.0
 SMOOTH_AMP_WEIGHT = 0.2
+REWARD_SCALE = 30.0
+REWARD_CLIP = None
 
-TRAIN_POINTS_STAGE1 = select_wigner_points(
+N_SHOTS_TRAIN = 0
+N_SHOTS_EVAL = 0
+
+CHAR_UNIFORM_MIX = 0.1
+CHAR_POINTS, CHAR_TARGET, CHAR_WEIGHTS, CHAR_AREA = prepare_characteristic_distribution(
     alpha_cat=ALPHA_CAT,
     n_boson=N_BOSON,
     extent=SAMPLE_EXTENT,
     grid_size=41,
-    top_k=TRAIN_TOPK_STAGE1,
     cat_parity="even",
+    mix_uniform=CHAR_UNIFORM_MIX,
 )
-TRAIN_POINTS_STAGE2 = select_wigner_points(
-    alpha_cat=ALPHA_CAT,
-    n_boson=N_BOSON,
-    extent=SAMPLE_EXTENT,
-    grid_size=41,
-    top_k=TRAIN_TOPK_STAGE2,
-    cat_parity="even",
-)
-TRAIN_POINTS_STAGE3 = select_wigner_points(
-    alpha_cat=ALPHA_CAT,
-    n_boson=N_BOSON,
-    extent=SAMPLE_EXTENT,
-    grid_size=41,
-    top_k=TRAIN_TOPK_STAGE3,
-    cat_parity="even",
-)
-EVAL_POINTS = select_wigner_points(
-    alpha_cat=ALPHA_CAT,
-    n_boson=N_BOSON,
-    extent=SAMPLE_EXTENT,
-    grid_size=41,
-    top_k=TRAIN_TOPK_STAGE3,
-    cat_parity="even",
-)
-FINAL_POINTS = select_wigner_points(
+FINAL_POINTS, FINAL_TARGET, FINAL_WEIGHTS, FINAL_AREA = prepare_characteristic_distribution(
     alpha_cat=ALPHA_CAT,
     n_boson=N_BOSON,
     extent=SAMPLE_EXTENT,
     grid_size=61,
-    top_k=120,
     cat_parity="even",
+    mix_uniform=CHAR_UNIFORM_MIX,
 )
 
 
@@ -94,12 +76,20 @@ def _smoothness_penalty(phi_r, phi_b, amp_r, amp_b):
     return SMOOTH_PHI_WEIGHT * phi_pen + SMOOTH_AMP_WEIGHT * amp_pen
 
 
-def _select_train_points(epoch):
+def _sample_characteristic_points(rng, n_points):
+    idx = rng.choice(len(CHAR_POINTS), size=n_points, replace=True, p=CHAR_WEIGHTS)
+    points = [CHAR_POINTS[i] for i in idx]
+    targets = CHAR_TARGET[idx]
+    weights = CHAR_WEIGHTS[idx]
+    return points, targets, weights
+
+
+def _select_train_points(epoch, rng):
     if epoch < TRAIN_STAGE1_EPOCHS:
-        return TRAIN_POINTS_STAGE1
+        return _sample_characteristic_points(rng, TRAIN_POINTS_STAGE1)
     if epoch < TRAIN_STAGE2_EPOCHS:
-        return TRAIN_POINTS_STAGE2
-    return TRAIN_POINTS_STAGE3
+        return _sample_characteristic_points(rng, TRAIN_POINTS_STAGE2)
+    return _sample_characteristic_points(rng, TRAIN_POINTS_STAGE3)
 
 done = False
 eval_log_path = os.path.join(os.getcwd(), "eval_fidelity.csv")
@@ -139,8 +129,14 @@ while not done:
             alpha_cat=ALPHA_CAT,
             cat_parity="even",
             sample_points=FINAL_POINTS,
+            target_values=FINAL_TARGET,
+            sample_weights=FINAL_WEIGHTS,
+            sample_area=FINAL_AREA,
+            reward_scale=REWARD_SCALE,
+            reward_clip=REWARD_CLIP,
             n_shots=0,
             return_details=True,
+            reward_mode="characteristic",
         )
 
         output_dir = os.path.join(os.getcwd(), "outputs")
@@ -152,37 +148,37 @@ while not done:
         logger.info("Saved final fidelity to %s", fidelity_path)
 
         grid = np.linspace(-SAMPLE_EXTENT, SAMPLE_EXTENT, 121)
-        w_target = wigner_grid(rho_target, grid, grid)
-        w_final = wigner_grid(rho_final, grid, grid)
+        chi_target = characteristic_grid(rho_target, grid, grid)
+        chi_final = characteristic_grid(rho_final, grid, grid)
 
         fig, axes = plt.subplots(1, 2, figsize=(10, 4))
         im0 = axes[0].imshow(
-            w_target,
+            chi_target,
             extent=[-SAMPLE_EXTENT, SAMPLE_EXTENT, -SAMPLE_EXTENT, SAMPLE_EXTENT],
             origin="lower",
             cmap="RdBu_r",
         )
-        axes[0].set_title("Target cat Wigner")
+        axes[0].set_title("Target cat characteristic")
         axes[0].set_xlabel("Re(alpha)")
         axes[0].set_ylabel("Im(alpha)")
         fig.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
 
         im1 = axes[1].imshow(
-            w_final,
+            chi_final,
             extent=[-SAMPLE_EXTENT, SAMPLE_EXTENT, -SAMPLE_EXTENT, SAMPLE_EXTENT],
             origin="lower",
             cmap="RdBu_r",
         )
-        axes[1].set_title("Final state Wigner")
+        axes[1].set_title("Final state characteristic")
         axes[1].set_xlabel("Re(alpha)")
         axes[1].set_ylabel("Im(alpha)")
         fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
 
         fig.tight_layout()
-        wigner_path = os.path.join(output_dir, "wigner_target_vs_final.png")
-        fig.savefig(wigner_path, dpi=150)
+        char_path = os.path.join(output_dir, "char_target_vs_final.png")
+        fig.savefig(char_path, dpi=150)
         plt.close(fig)
-        logger.info("Saved Wigner plot to %s", wigner_path)
+        logger.info("Saved characteristic plot to %s", char_path)
 
         done = True
         logger.info("Training finished.")
@@ -203,12 +199,15 @@ while not done:
 
     logger.info("Start %s epoch %d", epoch_type, epoch)
 
+    rng = np.random.default_rng(epoch)
     if epoch_type == "evaluation":
-        n_shots = 0
-        sample_points = EVAL_POINTS
+        n_shots = N_SHOTS_EVAL
+        sample_points, target_values, sample_weights = _sample_characteristic_points(
+            rng, TRAIN_POINTS_STAGE3
+        )
     else:
-        n_shots = 0
-        sample_points = _select_train_points(epoch)
+        n_shots = N_SHOTS_TRAIN
+        sample_points, target_values, sample_weights = _select_train_points(epoch, rng)
 
     reward_data = np.zeros((batch_size))
     fidelity_data = None
@@ -227,8 +226,14 @@ while not done:
                 alpha_cat=ALPHA_CAT,
                 cat_parity="even",
                 sample_points=sample_points,
+                target_values=target_values,
+                sample_weights=sample_weights,
+                sample_area=CHAR_AREA,
+                reward_scale=REWARD_SCALE,
+                reward_clip=REWARD_CLIP,
                 n_shots=n_shots,
                 return_details=True,
+                reward_mode="characteristic",
             )
             reward_data[ii] = reward
             fidelity_data[ii] = fidelity
@@ -244,14 +249,19 @@ while not done:
                 alpha_cat=ALPHA_CAT,
                 cat_parity="even",
                 sample_points=sample_points,
+                target_values=target_values,
+                sample_weights=sample_weights,
+                sample_area=CHAR_AREA,
+                reward_scale=REWARD_SCALE,
+                reward_clip=REWARD_CLIP,
                 n_shots=n_shots,
+                reward_mode="characteristic",
             )
             smooth_pen = _smoothness_penalty(
                 phi_r[ii], phi_b[ii], amp_r[ii], amp_b[ii]
             )
             reward_data[ii] -= SMOOTH_LAMBDA * smooth_pen
 
-    reward_data = np.clip(reward_data, -1.0, 1.0)
     R = np.mean(reward_data)
     std_R = np.std(reward_data)
     logger.info("Average reward %.3f", R)

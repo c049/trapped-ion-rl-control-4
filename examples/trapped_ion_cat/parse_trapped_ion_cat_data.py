@@ -48,7 +48,7 @@ if eval_rewards is not None:
     ax.plot(eval_epochs, eval_mean, "o", label="eval reward")
 
 ax.set_xlabel("Epoch")
-ax.set_ylabel("Wigner reward")
+ax.set_ylabel("Characteristic reward")
 ax.legend(loc="best")
 fig.tight_layout()
 fig.savefig(plot_path, dpi=150)

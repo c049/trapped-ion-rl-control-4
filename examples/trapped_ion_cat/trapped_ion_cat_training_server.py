@@ -19,12 +19,12 @@ from quantum_control_rl_server.h5log import h5log
 root_dir = os.getcwd()
 host_ip = "127.0.0.1"
 
-num_epochs = 1500
+num_epochs = 300
 train_batch_size = 160
 
 do_evaluation = True
 eval_interval = 20
-eval_batch_size = 1
+eval_batch_size = 5
 
 learn_residuals = True
 save_tf_style = False
@@ -63,8 +63,8 @@ action_scale = {
 to_learn = {
     "phi_r": True,
     "phi_b": True,
-    "amp_r": True,
-    "amp_b": True,
+    "amp_r": False,
+    "amp_b": False,
 }
 
 rl_params = {

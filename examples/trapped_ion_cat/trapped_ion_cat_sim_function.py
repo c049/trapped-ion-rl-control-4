@@ -72,6 +72,48 @@ def _sample_parity(parity_expect, n_shots, rng):
     return 2.0 * shots.mean() - 1.0
 
 
+def _characteristic_at_point(rho, alpha):
+    n_boson = rho.dims[0][0]
+    disp = qt.displace(n_boson, alpha)
+    return (rho * disp).tr()
+
+
+def _target_characteristic_values(target_rho, sample_points):
+    return np.array(
+        [_characteristic_at_point(target_rho, alpha) for alpha in sample_points],
+        dtype=complex,
+    )
+
+
+def prepare_characteristic_distribution(
+    alpha_cat,
+    n_boson,
+    extent,
+    grid_size,
+    cat_parity="even",
+    mix_uniform=0.0,
+):
+    axis = np.linspace(-extent, extent, grid_size)
+    if grid_size > 1:
+        delta = float(axis[1] - axis[0])
+    else:
+        delta = float(2.0 * extent)
+    area_element = delta * delta
+    target = _cat_state(alpha_cat, n_boson, parity=cat_parity)
+    target_rho = target.proj()
+    points = [x + 1j * y for x in axis for y in axis]
+    chi_target = _target_characteristic_values(target_rho, points)
+    weights = np.abs(chi_target)
+    if mix_uniform > 0.0:
+        weights = (1.0 - mix_uniform) * weights + mix_uniform * np.ones_like(weights)
+    total = float(np.sum(weights))
+    if not np.isfinite(total) or total <= 0:
+        weights = np.ones_like(weights) / weights.size
+    else:
+        weights = weights / total
+    return points, chi_target, weights, area_element
+
+
 def _as_time_array(value, n_steps, name):
     arr = np.asarray(value, dtype=float)
     if arr.ndim == 0:
@@ -113,10 +155,26 @@ def simulate_boson_state(
     coeff_r = 0.5 * omega_r * np.exp(1j * phi_r)
     coeff_b = 0.5 * omega_b * np.exp(1j * phi_b)
 
-    coeff_r_func = qt.interpolate.Cubic_Spline(ts[0], ts[-1], coeff_r)
-    coeff_r_conj = qt.interpolate.Cubic_Spline(ts[0], ts[-1], np.conj(coeff_r))
-    coeff_b_func = qt.interpolate.Cubic_Spline(ts[0], ts[-1], coeff_b)
-    coeff_b_conj = qt.interpolate.Cubic_Spline(ts[0], ts[-1], np.conj(coeff_b))
+    def _make_coeff_func(times, values):
+        values = np.asarray(values, dtype=complex)
+        if hasattr(qt, "interpolate"):
+            return qt.interpolate.Cubic_Spline(times[0], times[-1], values)
+
+        # Fallback for QuTiP versions without qt.interpolate
+        real_vals = values.real.astype(float)
+        imag_vals = values.imag.astype(float)
+
+        def _interp(t, _args=None):
+            re = np.interp(t, times, real_vals)
+            im = np.interp(t, times, imag_vals)
+            return re + 1j * im
+
+        return _interp
+
+    coeff_r_func = _make_coeff_func(ts, coeff_r)
+    coeff_r_conj = _make_coeff_func(ts, np.conj(coeff_r))
+    coeff_b_func = _make_coeff_func(ts, coeff_b)
+    coeff_b_conj = _make_coeff_func(ts, np.conj(coeff_b))
 
     H = [
         [sigma_p * a, coeff_r_func],
@@ -135,6 +193,15 @@ def simulate_boson_state(
 
 def wigner_grid(rho, xvec, yvec):
     return qt.wigner(rho, xvec, yvec)
+
+
+def characteristic_grid(rho, xvec, yvec):
+    vals = np.zeros((len(yvec), len(xvec)))
+    for yi, y in enumerate(yvec):
+        for xi, x in enumerate(xvec):
+            beta = x + 1j * y
+            vals[yi, xi] = _characteristic_at_point(rho, beta).real
+    return vals
 
 
 def select_wigner_points(
@@ -183,9 +250,15 @@ def trapped_ion_cat_sim(
     sample_extent=2.5,
     n_sample_points=30,
     sample_points=None,
-    n_shots=1,
+    target_values=None,
+    sample_weights=None,
+    sample_area=None,
+    reward_scale=1.0,
+    reward_clip=None,
+    n_shots=0,
     seed=None,
     return_details=False,
+    reward_mode="characteristic",
 ):
     """
     Simulate trapped-ion state preparation with RSB/BSB controls and return
@@ -212,7 +285,9 @@ def trapped_ion_cat_sim(
         n_times=n_times,
     )
 
-    parity_op = _parity_operator(n_boson)
+    target = _cat_state(alpha_cat, n_boson, parity=cat_parity)
+    target_rho = target.proj()
+
     if sample_points is None:
         if sample_mode == "cat":
             sample_points = _cat_focus_points(alpha_cat)
@@ -220,25 +295,58 @@ def trapped_ion_cat_sim(
             sample_points = _random_points(n_sample_points, sample_extent, rng)
         else:
             sample_points = _sample_points(sample_grid, sample_extent)
+        target_values = None
+        sample_weights = None
     else:
         sample_points = list(sample_points)
 
-    target = _cat_state(alpha_cat, n_boson, parity=cat_parity)
-    target_rho = target.proj()
-    target_wigner = _target_wigner_values(target_rho, sample_points, parity_op)
+    if reward_mode == "characteristic":
+        if target_values is None:
+            target_values = _target_characteristic_values(target_rho, sample_points)
 
-    w_meas = []
-    for alpha in sample_points:
-        parity_expect = _wigner_at_point(rho_boson, alpha, parity_op) * (np.pi / 2.0)
-        parity_sample = _sample_parity(parity_expect, n_shots, rng)
-        w_meas.append((2.0 / np.pi) * parity_sample)
-    w_meas = np.array(w_meas, dtype=float)
+        if sample_weights is None:
+            sample_weights = np.full(len(sample_points), 1.0 / len(sample_points))
+        sample_weights = np.asarray(sample_weights, dtype=float)
+        if sample_area is None:
+            sample_area = 1.0
 
-    denom = float(np.mean(target_wigner ** 2))
-    if not np.isfinite(denom) or denom <= 0:
-        denom = 1.0
-    reward = float(np.mean(target_wigner * w_meas) / denom)
-    reward = float(np.clip(reward, -1.0, 1.0))
+        meas = []
+        for alpha in sample_points:
+            chi_expect = _characteristic_at_point(rho_boson, alpha)
+            if n_shots <= 0:
+                meas.append(chi_expect)
+            else:
+                # With shots > 0, we only have access to ±1 samples for each
+                # quadrature in a realistic setting. This branch keeps the
+                # legacy behavior and treats the real part as the observable.
+                chi_real = float(np.clip(chi_expect.real, -1.0, 1.0))
+                p_plus = 0.5 * (1.0 + chi_real)
+                meas.append(1.0 if rng.random() < p_plus else -1.0)
+        meas = np.array(meas, dtype=complex)
+        denom = sample_weights
+        reward_terms = meas * np.conjugate(target_values) / denom
+        reward = float(
+            reward_scale * (sample_area / np.pi) * np.mean(reward_terms).real
+        )
+        if reward_clip is not None:
+            reward = float(np.clip(reward, -reward_clip, reward_clip))
+    else:
+        parity_op = _parity_operator(n_boson)
+        if target_values is None:
+            target_values = _target_wigner_values(target_rho, sample_points, parity_op)
+        w_meas = []
+        for alpha in sample_points:
+            parity_expect = _wigner_at_point(rho_boson, alpha, parity_op) * (np.pi / 2.0)
+            parity_sample = _sample_parity(parity_expect, n_shots, rng)
+            w_meas.append((2.0 / np.pi) * parity_sample)
+        w_meas = np.array(w_meas, dtype=float)
+        denom = float(np.mean(target_values ** 2))
+        if not np.isfinite(denom) or denom <= 0:
+            denom = 1.0
+        reward = float(np.mean(target_values * w_meas) / denom)
+        if reward_clip is not None:
+            reward = float(np.clip(reward, -reward_clip, reward_clip))
+
     if not return_details:
         return reward
 
