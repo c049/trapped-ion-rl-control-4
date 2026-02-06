@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import jax.numpy as jnp
 import dynamiqs as dq
@@ -70,6 +71,17 @@ def _characteristic_at_point(rho, alpha):
     n_boson = rho.shape[-1]
     disp = dq.displace(n_boson, alpha)
     return dq.expect(disp, rho)
+
+
+def _characteristic_at_point_full(psi_full, alpha, n_boson):
+    disp = dq.displace(n_boson, alpha)
+    disp_full = dq.tensor(dq.eye(2), disp)
+    return dq.expect(disp_full, psi_full)
+
+
+def _full_disp_ops(n_boson, alphas):
+    disp_ops = dq.displace(n_boson, alphas)
+    return dq.tensor(dq.eye(2), disp_ops)
 
 
 def _target_characteristic_values(target_rho, sample_points):
@@ -158,13 +170,14 @@ def simulate_boson_state(
     omega_b,
     t_step,
     n_times=None,
+    return_density=False,
 ):
     phi_r = jnp.asarray(phi_r, dtype=jnp.float32)
     phi_b = jnp.asarray(phi_b, dtype=jnp.float32)
     if phi_r.shape != phi_b.shape:
         raise ValueError("phi_r and phi_b must have the same shape.")
     if phi_r.ndim == 1:
-        rho_boson, rho_qubit = _simulate_boson_state_batch(
+        psi_final = _simulate_boson_state_batch(
             phi_r[jnp.newaxis, :],
             phi_b[jnp.newaxis, :],
             n_boson,
@@ -173,10 +186,17 @@ def simulate_boson_state(
             t_step,
             n_times=n_times,
         )
-        return rho_boson[0], rho_qubit[0]
-    return _simulate_boson_state_batch(
+        if return_density:
+            rho_boson, rho_qubit = _ptrace_boson_qubit(psi_final, n_boson)
+            return psi_final[0], rho_boson[0], rho_qubit[0]
+        return psi_final[0]
+    psi_final = _simulate_boson_state_batch(
         phi_r, phi_b, n_boson, omega_r, omega_b, t_step, n_times=n_times
     )
+    if return_density:
+        rho_boson, rho_qubit = _ptrace_boson_qubit(psi_final, n_boson)
+        return psi_final, rho_boson, rho_qubit
+    return psi_final
 
 
 def _simulate_boson_state_batch(
@@ -211,9 +231,13 @@ def _simulate_boson_state_batch(
 
     psi0 = dq.tensor(dq.basis(2, 0), dq.fock(n_boson, 0))
     tsave = jnp.array([t_duration], dtype=jnp.float32)
-    options = dq.Options(save_states=False, progress_meter=False)
+    options = dq.Options(save_states=False, progress_meter=False, t0=0.0)
     result = dq.sesolve(H, psi0, tsave=tsave, options=options)
     psi_final = result.final_state
+    return psi_final
+
+
+def _ptrace_boson_qubit(psi_final, n_boson):
     rho_boson = dq.ptrace(psi_final, 1, dims=(2, n_boson))
     rho_qubit = dq.ptrace(psi_final, 0, dims=(2, n_boson))
     return rho_boson, rho_qubit
@@ -294,6 +318,7 @@ def trapped_ion_cat_sim(
     return_details=False,
     reward_mode="characteristic",
     reward_norm=None,
+    return_density=False,
 ):
     """
     Simulate trapped-ion state preparation with RSB/BSB controls and return
@@ -310,15 +335,30 @@ def trapped_ion_cat_sim(
     else:
         omega_b = omega * np.asarray(amp_b, dtype=float)
 
-    rho_boson, rho_qubit = simulate_boson_state(
-        phi_r,
-        phi_b,
-        n_boson=n_boson,
-        omega_r=omega_r,
-        omega_b=omega_b,
-        t_step=t_step,
-        n_times=n_times,
-    )
+    need_rho = return_density or reward_mode != "characteristic"
+    if need_rho:
+        psi_full, rho_boson, rho_qubit = simulate_boson_state(
+            phi_r,
+            phi_b,
+            n_boson=n_boson,
+            omega_r=omega_r,
+            omega_b=omega_b,
+            t_step=t_step,
+            n_times=n_times,
+            return_density=True,
+        )
+    else:
+        psi_full = simulate_boson_state(
+            phi_r,
+            phi_b,
+            n_boson=n_boson,
+            omega_r=omega_r,
+            omega_b=omega_b,
+            t_step=t_step,
+            n_times=n_times,
+            return_density=False,
+        )
+        rho_boson = None
 
     target = _cat_state(alpha_cat, n_boson, parity=cat_parity)
     target_rho = target @ target.dag()
@@ -347,7 +387,7 @@ def trapped_ion_cat_sim(
 
         meas = []
         for alpha in sample_points:
-            chi_expect = _characteristic_at_point(rho_boson, alpha)
+            chi_expect = _characteristic_at_point_full(psi_full, alpha, n_boson)
             if n_shots <= 0:
                 meas.append(chi_expect)
             else:
@@ -356,12 +396,12 @@ def trapped_ion_cat_sim(
                 meas.append(1.0 if rng.random() < p_plus else -1.0)
         meas = np.array(meas, dtype=complex)
         denom = sample_weights
-        reward_terms = meas * np.conjugate(target_values) / denom
-        reward = float(
-            reward_scale * (sample_area / np.pi) * np.mean(reward_terms).real
-        )
-        if reward_norm is not None:
-            reward = float(reward / reward_norm)
+        overlap = np.mean(meas * np.conjugate(target_values) / denom)
+        norm = np.mean((np.abs(target_values) ** 2) / denom)
+        if not np.isfinite(norm) or norm <= 0.0:
+            norm = 1.0
+        # Normalized overlap: equals 1 for the target state (up to sampling error).
+        reward = float(reward_scale * overlap.real / norm)
         if reward_clip is not None:
             reward = float(np.clip(reward, -reward_clip, reward_clip))
     else:
@@ -384,7 +424,8 @@ def trapped_ion_cat_sim(
     if not return_details:
         return reward
 
-    fidelity = float(dq.expect(target_rho, rho_boson).real)
+    target_op = dq.tensor(dq.eye(2), target_rho)
+    fidelity = float(dq.expect(target_op, psi_full).real)
     return reward, fidelity, rho_boson, target_rho
 
 
@@ -414,6 +455,7 @@ def trapped_ion_cat_sim_batch(
     return_details=False,
     reward_mode="characteristic",
     reward_norm=None,
+    return_density=False,
 ):
     rng = np.random.default_rng(seed)
 
@@ -421,6 +463,86 @@ def trapped_ion_cat_sim_batch(
     phi_b = np.asarray(phi_b, dtype=float)
     if phi_r.shape != phi_b.shape:
         raise ValueError("phi_r and phi_b must have the same shape.")
+
+    force_serial = os.environ.get("QCRL_SERIAL_SIM", "0") == "1"
+    if force_serial and phi_r.ndim > 1 and phi_r.shape[0] > 1:
+        rewards = []
+        fidelities = []
+        rho_list = []
+        target_rho = None
+        for ii in range(phi_r.shape[0]):
+            seed_i = None if seed is None else int(rng.integers(1, 2**31 - 1))
+            if return_details:
+                r_i, f_i, rho_i, target_rho = trapped_ion_cat_sim(
+                    phi_r[ii],
+                    phi_b[ii],
+                    amp_r=None if amp_r is None else np.asarray(amp_r, dtype=float)[ii],
+                    amp_b=None if amp_b is None else np.asarray(amp_b, dtype=float)[ii],
+                    n_boson=n_boson,
+                    omega=omega,
+                    t_step=t_step,
+                    n_times=n_times,
+                    alpha_cat=alpha_cat,
+                    cat_parity=cat_parity,
+                    sample_mode=sample_mode,
+                    sample_grid=sample_grid,
+                    sample_extent=sample_extent,
+                    n_sample_points=n_sample_points,
+                    sample_points=sample_points,
+                    target_values=target_values,
+                    sample_weights=sample_weights,
+                    sample_area=sample_area,
+                    reward_scale=reward_scale,
+                    reward_clip=reward_clip,
+                    n_shots=n_shots,
+                    seed=seed_i,
+                    return_details=True,
+                    reward_mode=reward_mode,
+                    reward_norm=reward_norm,
+                    return_density=return_density,
+                )
+                rewards.append(r_i)
+                fidelities.append(f_i)
+                if return_density:
+                    rho_list.append(rho_i)
+            else:
+                r_i = trapped_ion_cat_sim(
+                    phi_r[ii],
+                    phi_b[ii],
+                    amp_r=None if amp_r is None else np.asarray(amp_r, dtype=float)[ii],
+                    amp_b=None if amp_b is None else np.asarray(amp_b, dtype=float)[ii],
+                    n_boson=n_boson,
+                    omega=omega,
+                    t_step=t_step,
+                    n_times=n_times,
+                    alpha_cat=alpha_cat,
+                    cat_parity=cat_parity,
+                    sample_mode=sample_mode,
+                    sample_grid=sample_grid,
+                    sample_extent=sample_extent,
+                    n_sample_points=n_sample_points,
+                    sample_points=sample_points,
+                    target_values=target_values,
+                    sample_weights=sample_weights,
+                    sample_area=sample_area,
+                    reward_scale=reward_scale,
+                    reward_clip=reward_clip,
+                    n_shots=n_shots,
+                    seed=seed_i,
+                    return_details=False,
+                    reward_mode=reward_mode,
+                    reward_norm=reward_norm,
+                    return_density=return_density,
+                )
+                rewards.append(r_i)
+
+        reward = np.array(rewards, dtype=float)
+        if not return_details:
+            return reward
+
+        fidelity = np.array(fidelities, dtype=float)
+        rho_boson = np.stack(rho_list) if return_density and rho_list else None
+        return reward, fidelity, rho_boson, target_rho
 
     if amp_r is None:
         omega_r = omega
@@ -431,15 +553,30 @@ def trapped_ion_cat_sim_batch(
     else:
         omega_b = omega * np.asarray(amp_b, dtype=float)
 
-    rho_boson, rho_qubit = simulate_boson_state(
-        phi_r,
-        phi_b,
-        n_boson=n_boson,
-        omega_r=omega_r,
-        omega_b=omega_b,
-        t_step=t_step,
-        n_times=n_times,
-    )
+    need_rho = return_density or reward_mode != "characteristic"
+    if need_rho:
+        psi_full, rho_boson, rho_qubit = simulate_boson_state(
+            phi_r,
+            phi_b,
+            n_boson=n_boson,
+            omega_r=omega_r,
+            omega_b=omega_b,
+            t_step=t_step,
+            n_times=n_times,
+            return_density=True,
+        )
+    else:
+        psi_full = simulate_boson_state(
+            phi_r,
+            phi_b,
+            n_boson=n_boson,
+            omega_r=omega_r,
+            omega_b=omega_b,
+            t_step=t_step,
+            n_times=n_times,
+            return_density=False,
+        )
+        rho_boson = None
 
     target = _cat_state(alpha_cat, n_boson, parity=cat_parity)
     target_rho = target @ target.dag()
@@ -469,8 +606,8 @@ def trapped_ion_cat_sim_batch(
         target_vals = jnp.asarray(target_values)
         weights = jnp.asarray(sample_weights)
 
-        disp_ops = dq.displace(n_boson, alphas)
-        meas = dq.expect(disp_ops, rho_boson)
+        full_ops = _full_disp_ops(n_boson, alphas)
+        meas = dq.expect(full_ops, psi_full)
         if meas.shape[0] == len(sample_points):
             meas = jnp.swapaxes(meas, 0, 1)
 
@@ -480,10 +617,11 @@ def trapped_ion_cat_sim_batch(
             meas = np.where(rng.random(size=p_plus.shape) < p_plus, 1.0, -1.0)
             meas = jnp.asarray(meas, dtype=jnp.complex64)
 
-        reward_terms = meas * jnp.conjugate(target_vals) / weights
-        reward = reward_scale * (sample_area / np.pi) * jnp.mean(reward_terms, axis=1).real
-        if reward_norm is not None:
-            reward = reward / reward_norm
+        overlap = jnp.mean(meas * jnp.conjugate(target_vals) / weights, axis=1)
+        norm = jnp.mean((jnp.abs(target_vals) ** 2) / weights)
+        norm = jnp.where(jnp.isfinite(norm) & (norm > 0), norm, 1.0)
+        # Normalized overlap: equals 1 for the target state (up to sampling error).
+        reward = reward_scale * overlap.real / norm
         if reward_clip is not None:
             reward = jnp.clip(reward, -reward_clip, reward_clip)
     else:
@@ -515,5 +653,6 @@ def trapped_ion_cat_sim_batch(
     if not return_details:
         return reward
 
-    fidelity = np.array(dq.expect(target_rho, rho_boson).real, dtype=float)
+    target_op = dq.tensor(dq.eye(2), target_rho)
+    fidelity = np.array(dq.expect(target_op, psi_full).real, dtype=float)
     return reward, fidelity, rho_boson, target_rho

@@ -35,17 +35,17 @@ N_STEPS = 120
 N_SEGMENTS = 60
 SEG_LEN = N_STEPS // N_SEGMENTS
 T_STEP = 10.0
-SAMPLE_EXTENT = 3.0
+SAMPLE_EXTENT = 4.0
 N_BOSON = 30
 ALPHA_CAT = 2.0
 
 TRAIN_POINTS_STAGE1 = 120
 TRAIN_POINTS_STAGE2 = 240
-TRAIN_POINTS_STAGE3 = 480
+TRAIN_POINTS_STAGE3 = 960
 TRAIN_STAGE1_EPOCHS = 200
 TRAIN_STAGE2_EPOCHS = 400
 
-CHAR_GRID_SIZE = 41
+CHAR_GRID_SIZE = 61
 FINAL_GRID_SIZE = 61
 PLOT_GRID_SIZE = 121
 
@@ -69,7 +69,10 @@ REWARD_CLIP = None
 N_SHOTS_TRAIN = 0
 N_SHOTS_EVAL = 0
 
-CHAR_UNIFORM_MIX = 0.0
+ACTION_NOISE_PHI = 0.05
+ACTION_NOISE_AMP = 0.05
+
+CHAR_UNIFORM_MIX = 0.2
 CHAR_POINTS, CHAR_TARGET, CHAR_WEIGHTS, CHAR_AREA = prepare_characteristic_distribution(
     alpha_cat=ALPHA_CAT,
     n_boson=N_BOSON,
@@ -106,6 +109,53 @@ def _smoothness_penalty(phi_r, phi_b, amp_r, amp_b):
     phi_pen = 0.5 * (np.mean(dphi_r ** 2, axis=axis) + np.mean(dphi_b ** 2, axis=axis))
     amp_pen = 0.5 * (np.mean(damp_r ** 2, axis=axis) + np.mean(damp_b ** 2, axis=axis))
     return SMOOTH_PHI_WEIGHT * phi_pen + SMOOTH_AMP_WEIGHT * amp_pen
+
+
+def _log_action_stats(tag, phi_r, phi_b, amp_r, amp_b):
+    def _stats(arr):
+        arr = np.asarray(arr)
+        return float(np.mean(arr)), float(np.std(arr)), float(np.min(arr)), float(np.max(arr))
+
+    for name, arr in [
+        ("phi_r", phi_r),
+        ("phi_b", phi_b),
+        ("amp_r", amp_r),
+        ("amp_b", amp_b),
+    ]:
+        mean, std, vmin, vmax = _stats(arr)
+        logger.info(
+            "%s %s stats: mean=%.4f std=%.4f min=%.4f max=%.4f",
+            tag,
+            name,
+            mean,
+            std,
+            vmin,
+            vmax,
+        )
+
+
+def _log_batch_diversity(tag, phi_r, phi_b, amp_r, amp_b):
+    def _batch_stats(arr):
+        arr = np.asarray(arr)
+        if arr.ndim < 2:
+            return 0.0, 0.0
+        std_over_batch = np.std(arr, axis=0)
+        return float(np.mean(std_over_batch)), float(np.max(std_over_batch))
+
+    for name, arr in [
+        ("phi_r", phi_r),
+        ("phi_b", phi_b),
+        ("amp_r", amp_r),
+        ("amp_b", amp_b),
+    ]:
+        mean_std, max_std = _batch_stats(arr)
+        logger.info(
+            "%s %s batch-std: mean=%.6f max=%.6f",
+            tag,
+            name,
+            mean_std,
+            max_std,
+        )
 
 
 def _sample_characteristic_points(rng, n_points):
@@ -174,6 +224,7 @@ while not done:
             reward_norm=FINAL_NORM,
             n_shots=0,
             return_details=True,
+            return_density=True,
             reward_mode="characteristic",
         )
 
@@ -230,25 +281,49 @@ while not done:
     phi_b_coeff = action_batch["phi_b"].reshape([batch_size, -1])
     amp_r_coeff = action_batch["amp_r"].reshape([batch_size, -1])
     amp_b_coeff = action_batch["amp_b"].reshape([batch_size, -1])
+
+    logger.info("Start %s epoch %d", epoch_type, epoch)
+    if epoch_type == "evaluation" or epoch % 20 == 0:
+        _log_action_stats(
+            f"Epoch {epoch} ({epoch_type})",
+            phi_r_coeff,
+            phi_b_coeff,
+            amp_r_coeff,
+            amp_b_coeff,
+        )
+        _log_batch_diversity(
+            f"Epoch {epoch} ({epoch_type})",
+            phi_r_coeff,
+            phi_b_coeff,
+            amp_r_coeff,
+            amp_b_coeff,
+        )
+
+    rng = np.random.default_rng(epoch)
+    if epoch_type == "training":
+        if ACTION_NOISE_PHI > 0.0:
+            phi_r_coeff = phi_r_coeff + rng.normal(0.0, ACTION_NOISE_PHI, size=phi_r_coeff.shape)
+            phi_b_coeff = phi_b_coeff + rng.normal(0.0, ACTION_NOISE_PHI, size=phi_b_coeff.shape)
+        if ACTION_NOISE_AMP > 0.0:
+            amp_r_coeff = amp_r_coeff + rng.normal(0.0, ACTION_NOISE_AMP, size=amp_r_coeff.shape)
+            amp_b_coeff = amp_b_coeff + rng.normal(0.0, ACTION_NOISE_AMP, size=amp_b_coeff.shape)
+
     phi_r = np.repeat(phi_r_coeff, SEG_LEN, axis=1)
     phi_b = np.repeat(phi_b_coeff, SEG_LEN, axis=1)
     amp_r = np.repeat(amp_r_coeff, SEG_LEN, axis=1)
     amp_b = np.repeat(amp_b_coeff, SEG_LEN, axis=1)
-
-    logger.info("Start %s epoch %d", epoch_type, epoch)
-
-    rng = np.random.default_rng(epoch)
     if epoch_type == "evaluation":
         n_shots = N_SHOTS_EVAL
         sample_points, target_values, sample_weights = _sample_characteristic_points(
             rng, TRAIN_POINTS_STAGE3
         )
-        reward_norm = CHAR_NORM
+        reward_norm = None
     else:
         n_shots = N_SHOTS_TRAIN
         sample_points, target_values, sample_weights, reward_norm = _select_train_points(
             epoch, rng
         )
+        reward_norm = None
 
     if epoch_type == "evaluation":
         reward_data, fidelity_data, _, _ = trapped_ion_cat_sim_batch(
@@ -296,6 +371,9 @@ while not done:
         smooth_pen = _smoothness_penalty(phi_r, phi_b, amp_r, amp_b)
         reward_data = reward_data - SMOOTH_LAMBDA * smooth_pen
 
+    reward_arr = np.asarray(reward_data)
+    logger.info("Reward shape %s", reward_arr.shape)
+    logger.info("Reward min %.6f max %.6f", float(np.min(reward_arr)), float(np.max(reward_arr)))
     R = np.mean(reward_data)
     std_R = np.std(reward_data)
     logger.info("Average reward %.3f", R)

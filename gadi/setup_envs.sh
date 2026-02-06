@@ -26,17 +26,17 @@ fi
 mkdir -p "${VENV_ROOT}"
 
 echo "==> Creating TF env at ${VENV_ROOT}/venv_tf"
-python -m venv "${VENV_ROOT}/venv_tf"
+python3 -m venv "${VENV_ROOT}/venv_tf"
 source "${VENV_ROOT}/venv_tf/bin/activate"
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install "tensorflow==2.15.1" "tf-agents==0.19.0" h5py
-python -m pip install -e . --no-build-isolation --no-deps
+python3 -m pip install --upgrade pip setuptools wheel
+python3 -m pip install "tensorflow==2.15.1" "tf-agents==0.19.0" h5py
+python3 -m pip install -e . --no-build-isolation --no-deps
 deactivate
 
 echo "==> Creating dynamiqs/JAX env at ${VENV_ROOT}/venv_dq"
-python -m venv "${VENV_ROOT}/venv_dq"
+python3 -m venv "${VENV_ROOT}/venv_dq"
 source "${VENV_ROOT}/venv_dq/bin/activate"
-python -m pip install --upgrade pip setuptools wheel
+python3 -m pip install --upgrade pip setuptools wheel
 
 if [[ "${JAX_GPU:-0}" == "1" ]]; then
   : "${JAX_PIP_SPEC:=jax[cuda12]}"
@@ -45,13 +45,13 @@ if [[ "${JAX_GPU:-0}" == "1" ]]; then
     echo "Set JAX_WHL_URL to the JAX CUDA wheel index URL from JAX docs." >&2
     exit 1
   fi
-  python -m pip install "${JAX_PIP_SPEC}" -f "${JAX_WHL_URL}"
+  python3 -m pip install "${JAX_PIP_SPEC}" -f "${JAX_WHL_URL}"
 else
-  python -m pip install "jax==0.4.38" "jaxlib==0.4.38"
+  python3 -m pip install "jax==0.4.38" "jaxlib==0.4.38"
 fi
 
-python -m pip install "dynamiqs==0.3.4" matplotlib h5py
-python -m pip install -e . --no-build-isolation --no-deps
+python3 -m pip install "dynamiqs==0.3.4" matplotlib h5py
+python3 -m pip install -e . --no-build-isolation --no-deps
 deactivate
 
 echo "==> Done. Envs at ${VENV_ROOT}"

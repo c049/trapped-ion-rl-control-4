@@ -1,33 +1,43 @@
 #!/usr/bin/env bash
 #PBS -N qcrl_cat
-#PBS -P <PROJECT>
-#PBS -q <GPU_QUEUE>
-#PBS -l ncpus=8
+#PBS -P mu61
+#PBS -q gpuvolta
+#PBS -l ncpus=12
 #PBS -l ngpus=1
 #PBS -l mem=32GB
 #PBS -l walltime=02:00:00
 #PBS -l jobfs=50GB
 #PBS -j oe
-#PBS -o logs/qcrl_${PBS_JOBID}.log
+#PBS -o /scratch/mu61/yl8164/quantum_control_rl_server/logs/qcrl_pbs.log
 
 set -euo pipefail
+set -x
 
-PROJECT="${PROJECT:-<PROJECT>}"
+PROJECT="${PROJECT:-mu61}"
 VENV_ROOT="${VENV_ROOT:-/scratch/${PROJECT}/${USER}/qcrl_envs}"
+PROJECT_DIR="${PROJECT_DIR:-/scratch/${PROJECT}/${USER}/quantum_control_rl_server}"
+LOG_DIR="${PROJECT_DIR}/logs"
 
-PY_MOD="${PY_MOD:-python3/3.11.5}"
-CUDA_MOD="${CUDA_MOD:-cuda/12.2}"
-CUDNN_MOD="${CUDNN_MOD:-cudnn/8.9.7}"
+PY_MOD="${PY_MOD:-python3/3.11.7}"
+CUDA_MOD="${CUDA_MOD:-cuda/12.2.2}"
+CUDNN_MOD="${CUDNN_MOD:-cudnn/8.9.7-cuda12}"
 
 module purge
 module load "${PY_MOD}"
 module load "${CUDA_MOD}"
 module load "${CUDNN_MOD}"
 
-cd "${PBS_O_WORKDIR}"
-mkdir -p logs
+echo "HOSTNAME: $(hostname)"
+echo "PROJECT_DIR: ${PROJECT_DIR}"
+if [[ ! -d "${PROJECT_DIR}" ]]; then
+  echo "ERROR: PROJECT_DIR does not exist: ${PROJECT_DIR}"
+  exit 1
+fi
+cd "${PROJECT_DIR}"
+mkdir -p "${LOG_DIR}"
 
-export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-12}"
+export PYTHONUNBUFFERED=1
 export MPLCONFIGDIR=/tmp/mpl
 mkdir -p "${MPLCONFIGDIR}"
 
@@ -35,22 +45,65 @@ mkdir -p "${MPLCONFIGDIR}"
 export DQ_FORCE_GPU=1
 export JAX_PLATFORM_NAME=gpu
 # If needed, point XLA to CUDA:
-# export XLA_FLAGS="--xla_gpu_cuda_data_dir=${CUDA_HOME}"
+export XLA_FLAGS="--xla_gpu_cuda_data_dir=/apps/cuda/12.2.2"
+export QCRL_SERIAL_SIM=0
 
-cd examples/trapped_ion_cat
+cd "${PROJECT_DIR}/examples/trapped_ion_cat"
 
 (
   source "${VENV_ROOT}/venv_tf/bin/activate"
   python trapped_ion_cat_training_server.py
-) > "${PBS_O_WORKDIR}/logs/server_${PBS_JOBID}.log" 2>&1 &
+) > "${LOG_DIR}/server_${PBS_JOBID}.log" 2>&1 &
 SERVER_PID=$!
 
-sleep 5
+SERVER_STARTUP_WAIT="${SERVER_STARTUP_WAIT:-600}"
+PORT=5555
+echo "Waiting for server to open port ${PORT} (timeout ${SERVER_STARTUP_WAIT}s)..." >> "${LOG_DIR}/qcrl_pbs.log"
+READY=0
+for _ in $(seq 1 "${SERVER_STARTUP_WAIT}"); do
+  if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+    echo "Server process exited during startup. Check server log." >> "${LOG_DIR}/qcrl_pbs.log"
+    break
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    if ss -ltn | grep -q ":${PORT}"; then
+      READY=1
+      break
+    fi
+  elif command -v netstat >/dev/null 2>&1; then
+    if netstat -ltn 2>/dev/null | grep -q ":${PORT}"; then
+      READY=1
+      break
+    fi
+  fi
+  if [[ "${READY}" -eq 1 ]]; then
+    READY=1
+    break
+  fi
+  sleep 1
+done
+
+if [[ "${READY}" -ne 1 ]]; then
+  echo "Server did not become ready within ${SERVER_STARTUP_WAIT}s." >> "${LOG_DIR}/qcrl_pbs.log"
+  tail -n 80 "${LOG_DIR}/server_${PBS_JOBID}.log" >> "${LOG_DIR}/qcrl_pbs.log"
+  kill "${SERVER_PID}" 2>/dev/null || true
+  exit 1
+fi
 
 (
   source "${VENV_ROOT}/venv_dq/bin/activate"
+  # Ensure JAX can find CUDA libs installed via pip (cuSPARSE, cuBLAS, etc.)
+  NVIDIA_LIBS=$(python3 - <<'PY'
+import site, glob, os
+sp = site.getsitepackages()[0]
+paths = glob.glob(os.path.join(sp, "nvidia", "*", "lib"))
+print(":".join(paths))
+PY
+)
+  export LD_LIBRARY_PATH="${NVIDIA_LIBS}:${LD_LIBRARY_PATH}"
+  echo "LD_LIBRARY_PATH for JAX: ${LD_LIBRARY_PATH}" >> "${LOG_DIR}/client_${PBS_JOBID}.log"
   python trapped_ion_cat_client.py
-) > "${PBS_O_WORKDIR}/logs/client_${PBS_JOBID}.log" 2>&1
+) > "${LOG_DIR}/client_${PBS_JOBID}.log" 2>&1
 STATUS=$?
 
 kill "${SERVER_PID}" || true

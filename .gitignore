@@ -128,9 +128,8 @@ logdir/
 **/outputs/
 **/checkpoint/
 
-# Keep example outputs for this repo
-!examples/trapped_ion_cat/outputs/
-!examples/trapped_ion_cat/outputs/**
+# Per-run evaluation artifacts
+examples/trapped_ion_cat/eval_fidelity.csv
 
 *.pdf
 
