@@ -24,6 +24,7 @@ PPO_LR = float(os.environ.get("PPO_LR", "1.0e-4"))
 PPO_ENTROPY_REG = float(os.environ.get("PPO_ENTROPY_REG", "5.0e-3"))
 PPO_INIT_STD = float(os.environ.get("PPO_INIT_STD", "0.3"))
 PPO_NUM_POLICY_UPDATES = int(os.environ.get("PPO_NUM_POLICY_UPDATES", "20"))
+RANDOM_SEED = int(os.environ.get("RANDOM_SEED", "0"))
 num_epochs = int(os.environ.get("NUM_EPOCHS", "300"))
 train_batch_size = int(os.environ.get("TRAIN_BATCH_SIZE", "160"))
 
@@ -80,7 +81,11 @@ if FAST_SMOKE:
     eval_batch_size = 2
     num_policy_updates = 2
 
+np.random.seed(RANDOM_SEED)
+tf.random.set_seed(RANDOM_SEED)
+
 rl_params = {
+    "random_seed": RANDOM_SEED,
     "num_epochs": num_epochs,
     "train_batch_size": train_batch_size,
     "do_evaluation": do_evaluation,
@@ -144,7 +149,7 @@ eval_driver = dynamic_episode_driver_sim_env.DynamicEpisodeDriverSimEnv(
 
 PPO.train_eval(
     root_dir=root_dir,
-    random_seed=0,
+    random_seed=RANDOM_SEED,
     num_epochs=num_epochs,
     normalize_observations=True,
     normalize_rewards=False,

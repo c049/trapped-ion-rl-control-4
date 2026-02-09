@@ -30,6 +30,12 @@ def _load_locs(h5_file, run_group):
     return locs
 
 
+def _get_or_default(locs, key, n_segments, default_value):
+    if key in locs:
+        return np.asarray(locs[key], dtype=float)
+    return np.full(n_segments, float(default_value), dtype=float)
+
+
 def _expand_segments(seg_values, n_steps):
     n_segments = len(seg_values)
     if n_steps % n_segments != 0:
@@ -59,15 +65,21 @@ def main():
         run = _latest_run_group(f)
         locs = _load_locs(f, run)
 
-    required = ["phi_r", "phi_b", "amp_r", "amp_b"]
+    required = ["phi_r", "phi_b"]
     for key in required:
         if key not in locs:
             raise SystemExit(f"Missing {key} in policy_distribution/locs.")
 
-    phi_r = _expand_segments(locs["phi_r"], args.n_steps)
-    phi_b = _expand_segments(locs["phi_b"], args.n_steps)
-    amp_r = _expand_segments(locs["amp_r"], args.n_steps)
-    amp_b = _expand_segments(locs["amp_b"], args.n_steps)
+    n_segments = len(np.asarray(locs["phi_r"]).reshape(-1))
+    phi_r_seg = _get_or_default(locs, "phi_r", n_segments, 0.0)
+    phi_b_seg = _get_or_default(locs, "phi_b", n_segments, 0.0)
+    amp_r_seg = _get_or_default(locs, "amp_r", n_segments, 1.0)
+    amp_b_seg = _get_or_default(locs, "amp_b", n_segments, 1.0)
+
+    phi_r = _expand_segments(phi_r_seg, args.n_steps)
+    phi_b = _expand_segments(phi_b_seg, args.n_steps)
+    amp_r = _expand_segments(amp_r_seg, args.n_steps)
+    amp_b = _expand_segments(amp_b_seg, args.n_steps)
 
     t = np.arange(args.n_steps) * args.t_step
 

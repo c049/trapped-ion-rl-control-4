@@ -39,9 +39,9 @@ SAMPLE_EXTENT = 4.0
 N_BOSON = 30
 ALPHA_CAT = 2.0
 
-TRAIN_POINTS_STAGE1 = 120
-TRAIN_POINTS_STAGE2 = 240
-TRAIN_POINTS_STAGE3 = 960
+TRAIN_POINTS_STAGE1 = int(os.environ.get("TRAIN_POINTS_STAGE1", "120"))
+TRAIN_POINTS_STAGE2 = int(os.environ.get("TRAIN_POINTS_STAGE2", "240"))
+TRAIN_POINTS_STAGE3 = int(os.environ.get("TRAIN_POINTS_STAGE3", "960"))
 TRAIN_STAGE1_EPOCHS = int(os.environ.get("TRAIN_STAGE1_EPOCHS", "120"))
 TRAIN_STAGE2_EPOCHS = int(os.environ.get("TRAIN_STAGE2_EPOCHS", "240"))
 
@@ -90,9 +90,18 @@ AMP_MIN = float(os.environ.get("AMP_MIN", "0.0"))
 AMP_MAX = float(os.environ.get("AMP_MAX", "2.0"))
 
 CHAR_UNIFORM_MIX = float(os.environ.get("CHAR_UNIFORM_MIX", "0.5"))
-FINAL_REFINE_SAMPLES = int(os.environ.get("FINAL_REFINE_SAMPLES", "64"))
+FINAL_REFINE_SAMPLES = int(os.environ.get("FINAL_REFINE_SAMPLES", "512"))
 FINAL_REFINE_SCALE = float(os.environ.get("FINAL_REFINE_SCALE", "1.0"))
 FINAL_REFINE_SEED = int(os.environ.get("FINAL_REFINE_SEED", "1234"))
+FINAL_REFINE_ROUNDS = int(os.environ.get("FINAL_REFINE_ROUNDS", "8"))
+FINAL_REFINE_TOPK = int(os.environ.get("FINAL_REFINE_TOPK", "24"))
+FINAL_REFINE_DECAY = float(os.environ.get("FINAL_REFINE_DECAY", "0.6"))
+FINAL_REFINE_MIN_SIGMA = float(os.environ.get("FINAL_REFINE_MIN_SIGMA", "0.05"))
+FINAL_REFINE_USE_LOC_CENTER = os.environ.get("FINAL_REFINE_USE_LOC_CENTER", "1") == "1"
+FINAL_REFINE_USE_TRAIN_CENTER = os.environ.get("FINAL_REFINE_USE_TRAIN_CENTER", "1") == "1"
+FINAL_REFINE_CENTER_SEED_STRIDE = int(
+    os.environ.get("FINAL_REFINE_CENTER_SEED_STRIDE", "1000003")
+)
 
 
 def _build_characteristic_distribution(grid_size):
@@ -184,6 +193,17 @@ logger.info(
     PHASE_CLIP,
     AMP_MIN,
     AMP_MAX,
+)
+logger.info(
+    "Final refinement setup: samples=%d rounds=%d topk=%d scale=%.3f decay=%.3f min_sigma=%.3f use_loc_center=%s use_train_center=%s",
+    FINAL_REFINE_SAMPLES,
+    FINAL_REFINE_ROUNDS,
+    FINAL_REFINE_TOPK,
+    FINAL_REFINE_SCALE,
+    FINAL_REFINE_DECAY,
+    FINAL_REFINE_MIN_SIGMA,
+    FINAL_REFINE_USE_LOC_CENTER,
+    FINAL_REFINE_USE_TRAIN_CENTER,
 )
 
 
@@ -343,6 +363,118 @@ EVAL_POINTS, EVAL_TARGET, EVAL_WEIGHTS = _sample_characteristic_points(
 )
 
 
+def _eval_fidelity_batch(phi_r_coeff, phi_b_coeff, amp_r_coeff, amp_b_coeff):
+    phi_r_full = np.repeat(phi_r_coeff, SEG_LEN, axis=1)
+    phi_b_full = np.repeat(phi_b_coeff, SEG_LEN, axis=1)
+    amp_r_full = np.repeat(amp_r_coeff, SEG_LEN, axis=1)
+    amp_b_full = np.repeat(amp_b_coeff, SEG_LEN, axis=1)
+    _, fidelity_batch, _, _ = trapped_ion_cat_sim_batch(
+        phi_r_full,
+        phi_b_full,
+        amp_r=amp_r_full,
+        amp_b=amp_b_full,
+        n_boson=N_BOSON,
+        omega=2 * np.pi * 0.002,
+        t_step=T_STEP,
+        alpha_cat=ALPHA_CAT,
+        cat_parity="even",
+        cat_phase=CAT_REL_PHASE,
+        sample_points=[0.0 + 0.0j],
+        target_values=np.array([1.0 + 0.0j], dtype=complex),
+        sample_weights=np.array([1.0], dtype=float),
+        sample_area=1.0,
+        reward_scale=1.0,
+        reward_clip=None,
+        reward_norm=None,
+        n_shots=0,
+        return_details=True,
+        return_density=False,
+        reward_mode="characteristic",
+        characteristic_objective=CHAR_REWARD_OBJECTIVE,
+    )
+    return np.asarray(fidelity_batch, dtype=float)
+
+
+def _refine_around_center(
+    center_phi_r,
+    center_phi_b,
+    center_amp_r,
+    center_amp_b,
+    sigma_phi_r,
+    sigma_phi_b,
+    rng,
+):
+    center_phi_r = np.asarray(center_phi_r, dtype=float)
+    center_phi_b = np.asarray(center_phi_b, dtype=float)
+    center_amp_r = np.asarray(center_amp_r, dtype=float)
+    center_amp_b = np.asarray(center_amp_b, dtype=float)
+    sigma_phi_r = np.asarray(sigma_phi_r, dtype=float)
+    sigma_phi_b = np.asarray(sigma_phi_b, dtype=float)
+
+    best_phi_r = center_phi_r.copy()
+    best_phi_b = center_phi_b.copy()
+    best_amp_r = center_amp_r.copy()
+    best_amp_b = center_amp_b.copy()
+    best_fidelity = float(
+        _eval_fidelity_batch(
+            best_phi_r[None, :],
+            best_phi_b[None, :],
+            best_amp_r[None, :],
+            best_amp_b[None, :],
+        )[0]
+    )
+
+    n_rounds = max(1, FINAL_REFINE_ROUNDS)
+    n_samples = max(0, FINAL_REFINE_SAMPLES)
+    topk = max(1, FINAL_REFINE_TOPK)
+
+    for ridx in range(n_rounds):
+        if n_samples <= 0:
+            break
+        scale = FINAL_REFINE_SCALE * (FINAL_REFINE_DECAY ** ridx)
+        n_cand = n_samples + 1
+
+        cand_phi_r = np.repeat(best_phi_r[None, :], n_cand, axis=0)
+        cand_phi_b = np.repeat(best_phi_b[None, :], n_cand, axis=0)
+        cand_amp_r = np.repeat(best_amp_r[None, :], n_cand, axis=0)
+        cand_amp_b = np.repeat(best_amp_b[None, :], n_cand, axis=0)
+
+        noise_r = rng.normal(size=(n_samples, N_SEGMENTS))
+        noise_b = rng.normal(size=(n_samples, N_SEGMENTS))
+        cand_phi_r[1:, :] = best_phi_r[None, :] + scale * noise_r * sigma_phi_r[None, :]
+        cand_phi_b[1:, :] = best_phi_b[None, :] + scale * noise_b * sigma_phi_b[None, :]
+        cand_phi_r = np.clip(cand_phi_r, -PHASE_CLIP, PHASE_CLIP)
+        cand_phi_b = np.clip(cand_phi_b, -PHASE_CLIP, PHASE_CLIP)
+        cand_amp_r = np.clip(cand_amp_r, AMP_MIN, AMP_MAX)
+        cand_amp_b = np.clip(cand_amp_b, AMP_MIN, AMP_MAX)
+
+        cand_fidelity = _eval_fidelity_batch(cand_phi_r, cand_phi_b, cand_amp_r, cand_amp_b)
+        order = np.argsort(cand_fidelity)[::-1]
+        keep = order[: min(topk, len(order))]
+        round_best_idx = int(order[0])
+        round_best = float(cand_fidelity[round_best_idx])
+        logger.info(
+            "Final refine round %d/%d | scale=%.4f best=%.6f mean_topk=%.6f",
+            ridx + 1,
+            n_rounds,
+            scale,
+            round_best,
+            float(np.mean(cand_fidelity[keep])),
+        )
+
+        if round_best > best_fidelity:
+            best_fidelity = round_best
+            best_phi_r = cand_phi_r[round_best_idx].copy()
+            best_phi_b = cand_phi_b[round_best_idx].copy()
+            best_amp_r = cand_amp_r[round_best_idx].copy()
+            best_amp_b = cand_amp_b[round_best_idx].copy()
+
+        sigma_phi_r = np.maximum(np.std(cand_phi_r[keep], axis=0), FINAL_REFINE_MIN_SIGMA)
+        sigma_phi_b = np.maximum(np.std(cand_phi_b[keep], axis=0), FINAL_REFINE_MIN_SIGMA)
+
+    return best_phi_r, best_phi_b, best_amp_r, best_amp_b, best_fidelity
+
+
 done = False
 eval_log_path = os.path.join(os.getcwd(), "eval_fidelity.csv")
 if os.environ.get("CLEAR_EVAL_LOG", "1") == "1" and os.path.exists(eval_log_path):
@@ -350,6 +482,9 @@ if os.environ.get("CLEAR_EVAL_LOG", "1") == "1" and os.path.exists(eval_log_path
 best_eval_fidelity = -np.inf
 best_eval_epoch = -1
 best_eval_action = None
+best_train_reward = -np.inf
+best_train_epoch = -1
+best_train_action = None
 while not done:
     message, done = client_socket.recv_data()
     logger.info("Received message from RL agent server.")
@@ -394,66 +529,54 @@ while not done:
             base_amp_r = np.array(amp_r_vals, dtype=float)
             base_amp_b = np.array(amp_b_vals, dtype=float)
 
-        # Optional one-shot refinement: sample candidates from the final policy
-        # distribution and pick the highest-fidelity action.
-        if FINAL_REFINE_SAMPLES > 0:
-            n_cand = FINAL_REFINE_SAMPLES + 1
-            cand_phi_r = np.repeat(base_phi_r[None, :], n_cand, axis=0)
-            cand_phi_b = np.repeat(base_phi_b[None, :], n_cand, axis=0)
-            cand_amp_r = np.repeat(base_amp_r[None, :], n_cand, axis=0)
-            cand_amp_b = np.repeat(base_amp_b[None, :], n_cand, axis=0)
-            if FINAL_REFINE_SAMPLES > 0:
-                rng_ref = np.random.default_rng(FINAL_REFINE_SEED)
-                noise_r = rng_ref.normal(size=(FINAL_REFINE_SAMPLES, N_SEGMENTS))
-                noise_b = rng_ref.normal(size=(FINAL_REFINE_SAMPLES, N_SEGMENTS))
-                cand_phi_r[1:, :] = base_phi_r[None, :] + FINAL_REFINE_SCALE * noise_r * scale_phi_r[None, :]
-                cand_phi_b[1:, :] = base_phi_b[None, :] + FINAL_REFINE_SCALE * noise_b * scale_phi_b[None, :]
-                cand_phi_r = np.clip(cand_phi_r, -PHASE_CLIP, PHASE_CLIP)
-                cand_phi_b = np.clip(cand_phi_b, -PHASE_CLIP, PHASE_CLIP)
-                cand_amp_r = np.clip(cand_amp_r, AMP_MIN, AMP_MAX)
-                cand_amp_b = np.clip(cand_amp_b, AMP_MIN, AMP_MAX)
-
-            cand_phi_r_full = np.repeat(cand_phi_r, SEG_LEN, axis=1)
-            cand_phi_b_full = np.repeat(cand_phi_b, SEG_LEN, axis=1)
-            cand_amp_r_full = np.repeat(cand_amp_r, SEG_LEN, axis=1)
-            cand_amp_b_full = np.repeat(cand_amp_b, SEG_LEN, axis=1)
-
-            _, cand_fidelity, _, _ = trapped_ion_cat_sim_batch(
-                cand_phi_r_full,
-                cand_phi_b_full,
-                amp_r=cand_amp_r_full,
-                amp_b=cand_amp_b_full,
-                n_boson=N_BOSON,
-                omega=2 * np.pi * 0.002,
-                t_step=T_STEP,
-                alpha_cat=ALPHA_CAT,
-                cat_parity="even",
-                cat_phase=CAT_REL_PHASE,
-                sample_points=[0.0 + 0.0j],
-                target_values=np.array([1.0 + 0.0j], dtype=complex),
-                sample_weights=np.array([1.0], dtype=float),
-                sample_area=1.0,
-                reward_scale=1.0,
-                reward_clip=None,
-                reward_norm=None,
-                n_shots=0,
-                return_details=True,
-                return_density=False,
-                reward_mode="characteristic",
-                characteristic_objective=CHAR_REWARD_OBJECTIVE,
+        # Multi-round local refinement in phase space. This directly optimizes
+        # fidelity around one or more centers using batched simulator calls.
+        sigma_phi_r = np.maximum(np.asarray(scale_phi_r, dtype=float), FINAL_REFINE_MIN_SIGMA)
+        sigma_phi_b = np.maximum(np.asarray(scale_phi_b, dtype=float), FINAL_REFINE_MIN_SIGMA)
+        centers = [(base_phi_r, base_phi_b, base_amp_r, base_amp_b, "best_eval")]
+        if FINAL_REFINE_USE_LOC_CENTER:
+            centers.append((loc_phi_r, loc_phi_b, base_amp_r, base_amp_b, "final_loc"))
+        if FINAL_REFINE_USE_TRAIN_CENTER and best_train_action is not None:
+            centers.append(
+                (
+                    np.array(best_train_action["phi_r"], dtype=float),
+                    np.array(best_train_action["phi_b"], dtype=float),
+                    np.array(best_train_action["amp_r"], dtype=float),
+                    np.array(best_train_action["amp_b"], dtype=float),
+                    "best_train_reward",
+                )
             )
-            cand_fidelity = np.asarray(cand_fidelity, dtype=float)
-            best_cand_idx = int(np.argmax(cand_fidelity))
-            base_phi_r = cand_phi_r[best_cand_idx].copy()
-            base_phi_b = cand_phi_b[best_cand_idx].copy()
-            base_amp_r = cand_amp_r[best_cand_idx].copy()
-            base_amp_b = cand_amp_b[best_cand_idx].copy()
+
+        global_best = None
+        global_best_fidelity = -np.inf
+        global_best_label = "none"
+        for cidx, (c_phi_r, c_phi_b, c_amp_r, c_amp_b, label) in enumerate(centers):
+            # Use an independent RNG stream per center to avoid correlated
+            # candidate sets when comparing multiple refinement centers.
+            center_seed = FINAL_REFINE_SEED + cidx * FINAL_REFINE_CENTER_SEED_STRIDE
+            rng_ref = np.random.default_rng(center_seed)
+            logger.info("Final refinement center=%s | seed=%d", label, center_seed)
+            b_phi_r, b_phi_b, b_amp_r, b_amp_b, b_fid = _refine_around_center(
+                c_phi_r,
+                c_phi_b,
+                c_amp_r,
+                c_amp_b,
+                sigma_phi_r,
+                sigma_phi_b,
+                rng_ref,
+            )
+            logger.info("Final refinement center=%s | best fidelity %.6f", label, b_fid)
+            if b_fid > global_best_fidelity:
+                global_best_fidelity = b_fid
+                global_best = (b_phi_r, b_phi_b, b_amp_r, b_amp_b)
+                global_best_label = label
+
+        if global_best is not None:
+            base_phi_r, base_phi_b, base_amp_r, base_amp_b = global_best
             logger.info(
-                "Final refinement candidates=%d scale=%.3f | best sampled fidelity %.6f (idx=%d)",
-                n_cand,
-                FINAL_REFINE_SCALE,
-                float(cand_fidelity[best_cand_idx]),
-                best_cand_idx,
+                "Final refinement selected center=%s with best sampled fidelity %.6f",
+                global_best_label,
+                global_best_fidelity,
             )
 
         phi_r_final = np.repeat(base_phi_r, SEG_LEN)
@@ -659,6 +782,23 @@ while not done:
     std_R = np.std(reward_data)
     logger.info("Average reward %.3f", R)
     logger.info("STDev reward %.3f", std_R)
+    if epoch_type == "training":
+        best_idx_train = int(np.argmax(reward_arr))
+        batch_best_reward = float(reward_arr[best_idx_train])
+        if batch_best_reward > best_train_reward:
+            best_train_reward = batch_best_reward
+            best_train_epoch = epoch
+            best_train_action = {
+                "phi_r": phi_r_coeff[best_idx_train].copy(),
+                "phi_b": phi_b_coeff[best_idx_train].copy(),
+                "amp_r": amp_r_coeff[best_idx_train].copy(),
+                "amp_b": amp_b_coeff[best_idx_train].copy(),
+            }
+            logger.info(
+                "Updated best training action at epoch %d with reward %.6f",
+                best_train_epoch,
+                best_train_reward,
+            )
     if fidelity_data is not None:
         fidelity_arr = np.asarray(fidelity_data, dtype=float)
         mean_fidelity = float(np.mean(fidelity_arr))
