@@ -128,6 +128,14 @@ logdir/
 **/outputs/
 **/checkpoint/
 
+# Keep canonical trapped-ion outputs under version control.
+!examples/trapped_ion_cat/outputs/
+!examples/trapped_ion_cat/outputs/eval_fidelity_curve.png
+!examples/trapped_ion_cat/outputs/pulse_sequences.png
+!examples/trapped_ion_cat/outputs/training_curve.png
+!examples/trapped_ion_cat/outputs/char_target_vs_final.png
+!examples/trapped_ion_cat/outputs/final_fidelity.txt
+
 # Per-run evaluation artifacts
 examples/trapped_ion_cat/eval_fidelity.csv
 
