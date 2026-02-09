@@ -36,6 +36,7 @@ N_SEGMENTS = 60
 SEG_LEN = N_STEPS // N_SEGMENTS
 T_STEP = 10.0
 SAMPLE_EXTENT = 4.0
+PLOT_EXTENT = float(os.environ.get("PLOT_EXTENT", "6.0"))
 N_BOSON = 30
 ALPHA_CAT = 2.0
 
@@ -196,6 +197,11 @@ logger.info(
     PHASE_CLIP,
     AMP_MIN,
     AMP_MAX,
+)
+logger.info(
+    "Characteristic plotting extent: %.3f (sampling extent: %.3f)",
+    PLOT_EXTENT,
+    SAMPLE_EXTENT,
 )
 logger.info(
     "Final refinement setup: samples=%d rounds=%d topk=%d top_eval_centers=%d scale=%.3f decay=%.3f min_sigma=%.3f use_loc_center=%s use_train_center=%s",
@@ -666,14 +672,14 @@ while not done:
         logger.info("Final fidelity %.6f", final_fidelity)
         logger.info("Saved final fidelity to %s", fidelity_path)
 
-        grid = np.linspace(-SAMPLE_EXTENT, SAMPLE_EXTENT, PLOT_GRID_SIZE)
+        grid = np.linspace(-PLOT_EXTENT, PLOT_EXTENT, PLOT_GRID_SIZE)
         chi_target = characteristic_grid(rho_target, grid, grid)
         chi_final = characteristic_grid(rho_final, grid, grid)
 
         fig, axes = plt.subplots(1, 2, figsize=(10, 4))
         im0 = axes[0].imshow(
             chi_target,
-            extent=[-SAMPLE_EXTENT, SAMPLE_EXTENT, -SAMPLE_EXTENT, SAMPLE_EXTENT],
+            extent=[-PLOT_EXTENT, PLOT_EXTENT, -PLOT_EXTENT, PLOT_EXTENT],
             origin="lower",
             cmap="RdBu_r",
         )
@@ -684,7 +690,7 @@ while not done:
 
         im1 = axes[1].imshow(
             chi_final,
-            extent=[-SAMPLE_EXTENT, SAMPLE_EXTENT, -SAMPLE_EXTENT, SAMPLE_EXTENT],
+            extent=[-PLOT_EXTENT, PLOT_EXTENT, -PLOT_EXTENT, PLOT_EXTENT],
             origin="lower",
             cmap="RdBu_r",
         )
