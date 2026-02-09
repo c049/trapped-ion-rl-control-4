@@ -95,6 +95,9 @@ FINAL_REFINE_SCALE = float(os.environ.get("FINAL_REFINE_SCALE", "1.0"))
 FINAL_REFINE_SEED = int(os.environ.get("FINAL_REFINE_SEED", "1234"))
 FINAL_REFINE_ROUNDS = int(os.environ.get("FINAL_REFINE_ROUNDS", "8"))
 FINAL_REFINE_TOPK = int(os.environ.get("FINAL_REFINE_TOPK", "24"))
+FINAL_REFINE_TOP_EVAL_CENTERS = int(
+    os.environ.get("FINAL_REFINE_TOP_EVAL_CENTERS", "3")
+)
 FINAL_REFINE_DECAY = float(os.environ.get("FINAL_REFINE_DECAY", "0.6"))
 FINAL_REFINE_MIN_SIGMA = float(os.environ.get("FINAL_REFINE_MIN_SIGMA", "0.05"))
 FINAL_REFINE_USE_LOC_CENTER = os.environ.get("FINAL_REFINE_USE_LOC_CENTER", "1") == "1"
@@ -195,10 +198,11 @@ logger.info(
     AMP_MAX,
 )
 logger.info(
-    "Final refinement setup: samples=%d rounds=%d topk=%d scale=%.3f decay=%.3f min_sigma=%.3f use_loc_center=%s use_train_center=%s",
+    "Final refinement setup: samples=%d rounds=%d topk=%d top_eval_centers=%d scale=%.3f decay=%.3f min_sigma=%.3f use_loc_center=%s use_train_center=%s",
     FINAL_REFINE_SAMPLES,
     FINAL_REFINE_ROUNDS,
     FINAL_REFINE_TOPK,
+    FINAL_REFINE_TOP_EVAL_CENTERS,
     FINAL_REFINE_SCALE,
     FINAL_REFINE_DECAY,
     FINAL_REFINE_MIN_SIGMA,
@@ -475,6 +479,31 @@ def _refine_around_center(
     return best_phi_r, best_phi_b, best_amp_r, best_amp_b, best_fidelity
 
 
+def _update_top_eval_actions(
+    records,
+    epoch,
+    fidelity,
+    phi_r,
+    phi_b,
+    amp_r,
+    amp_b,
+):
+    if FINAL_REFINE_TOP_EVAL_CENTERS <= 0:
+        return records
+    rec = {
+        "epoch": int(epoch),
+        "fidelity": float(fidelity),
+        "phi_r": np.array(phi_r, dtype=float).copy(),
+        "phi_b": np.array(phi_b, dtype=float).copy(),
+        "amp_r": np.array(amp_r, dtype=float).copy(),
+        "amp_b": np.array(amp_b, dtype=float).copy(),
+    }
+    filtered = [r for r in records if int(r["epoch"]) != int(epoch)]
+    filtered.append(rec)
+    filtered.sort(key=lambda x: float(x["fidelity"]), reverse=True)
+    return filtered[: max(1, FINAL_REFINE_TOP_EVAL_CENTERS)]
+
+
 done = False
 eval_log_path = os.path.join(os.getcwd(), "eval_fidelity.csv")
 if os.environ.get("CLEAR_EVAL_LOG", "1") == "1" and os.path.exists(eval_log_path):
@@ -485,6 +514,7 @@ best_eval_action = None
 best_train_reward = -np.inf
 best_train_epoch = -1
 best_train_action = None
+top_eval_actions = []
 while not done:
     message, done = client_socket.recv_data()
     logger.info("Received message from RL agent server.")
@@ -545,6 +575,25 @@ while not done:
                     np.array(best_train_action["amp_b"], dtype=float),
                     "best_train_reward",
                 )
+            )
+        if FINAL_REFINE_TOP_EVAL_CENTERS > 0 and top_eval_actions:
+            added_top_eval = 0
+            for rec in top_eval_actions:
+                if best_eval_action is not None and int(rec["epoch"]) == int(best_eval_epoch):
+                    continue
+                centers.append(
+                    (
+                        np.array(rec["phi_r"], dtype=float),
+                        np.array(rec["phi_b"], dtype=float),
+                        np.array(rec["amp_r"], dtype=float),
+                        np.array(rec["amp_b"], dtype=float),
+                        f"top_eval_epoch_{int(rec['epoch'])}",
+                    )
+                )
+                added_top_eval += 1
+            logger.info(
+                "Added %d historical top-eval centers for refinement",
+                added_top_eval,
             )
 
         global_best = None
@@ -825,6 +874,15 @@ while not done:
                 best_eval_epoch,
                 best_eval_fidelity,
             )
+        top_eval_actions = _update_top_eval_actions(
+            top_eval_actions,
+            epoch=epoch,
+            fidelity=batch_best_fidelity,
+            phi_r=phi_r_coeff[best_idx],
+            phi_b=phi_b_coeff[best_idx],
+            amp_r=amp_r_coeff[best_idx],
+            amp_b=amp_b_coeff[best_idx],
+        )
         write_header = not os.path.exists(eval_log_path)
         with open(eval_log_path, "a", encoding="utf-8") as f:
             if write_header:
