@@ -20,13 +20,33 @@ root_dir = os.getcwd()
 host_ip = "127.0.0.1"
 
 FAST_SMOKE = os.environ.get("FAST_SMOKE", "0") == "1"
-PPO_LR = float(os.environ.get("PPO_LR", "1.0e-4"))
-PPO_ENTROPY_REG = float(os.environ.get("PPO_ENTROPY_REG", "5.0e-3"))
-PPO_INIT_STD = float(os.environ.get("PPO_INIT_STD", "0.3"))
-PPO_NUM_POLICY_UPDATES = int(os.environ.get("PPO_NUM_POLICY_UPDATES", "20"))
+PPO_LR = float(os.environ.get("PPO_LR", "3.0e-4"))
+PPO_ENTROPY_REG = float(os.environ.get("PPO_ENTROPY_REG", "2.0e-4"))
+PPO_INIT_STD = float(os.environ.get("PPO_INIT_STD", "0.12"))
+PPO_NUM_POLICY_UPDATES = int(os.environ.get("PPO_NUM_POLICY_UPDATES", "10"))
 RANDOM_SEED = int(os.environ.get("RANDOM_SEED", "0"))
-num_epochs = int(os.environ.get("NUM_EPOCHS", "300"))
+num_epochs = int(os.environ.get("NUM_EPOCHS", "2000"))
 train_batch_size = int(os.environ.get("TRAIN_BATCH_SIZE", "160"))
+N_STEPS = int(os.environ.get("N_STEPS", "120"))
+N_SEGMENTS = int(os.environ.get("N_SEGMENTS", "60"))
+PHASE_ACTION_SCALE = float(os.environ.get("PHASE_ACTION_SCALE", str(np.pi)))
+AMP_ACTION_SCALE = float(os.environ.get("AMP_ACTION_SCALE", "0.35"))
+LEARN_AMP_R = os.environ.get("LEARN_AMP_R", "0") == "1"
+LEARN_AMP_B = os.environ.get("LEARN_AMP_B", "0") == "1"
+
+
+def _parse_fc_layers(env_name, default):
+    raw = os.environ.get(env_name, "").strip()
+    if raw == "":
+        return tuple(default)
+    vals = tuple(int(v.strip()) for v in raw.split(",") if v.strip())
+    if any(v <= 0 for v in vals):
+        raise ValueError(f"{env_name} values must be positive integers, got {vals}")
+    return vals
+
+
+ACTOR_FC_LAYERS = _parse_fc_layers("ACTOR_FC_LAYERS", (50, 20))
+VALUE_FC_LAYERS = _parse_fc_layers("VALUE_FC_LAYERS", ())
 
 do_evaluation = True
 eval_interval = int(os.environ.get("EVAL_INTERVAL", "20"))
@@ -36,15 +56,22 @@ num_policy_updates = PPO_NUM_POLICY_UPDATES
 learn_residuals = True
 save_tf_style = False
 
-n_steps = 120
-n_segments = 60
+if N_SEGMENTS <= 0 or N_STEPS <= 0:
+    raise ValueError("N_STEPS and N_SEGMENTS must both be positive.")
+if N_STEPS % N_SEGMENTS != 0:
+    raise ValueError(
+        f"N_STEPS ({N_STEPS}) must be divisible by N_SEGMENTS ({N_SEGMENTS})."
+    )
+
+n_steps = N_STEPS
+n_segments = N_SEGMENTS
 init_phi_r = list(np.zeros(n_segments))
 init_phi_b = list(np.zeros(n_segments))
 init_amp_r = list(np.ones(n_segments))
 init_amp_b = list(np.ones(n_segments))
 
-phase_scale = list(np.ones(n_segments, dtype=float) * np.pi)
-amp_scale = list(np.ones(n_segments, dtype=float) * 1.0)
+phase_scale = list(np.ones(n_segments, dtype=float) * PHASE_ACTION_SCALE)
+amp_scale = list(np.ones(n_segments, dtype=float) * AMP_ACTION_SCALE)
 
 action_script = {
     "phi_r": [init_phi_r],
@@ -70,8 +97,8 @@ action_scale = {
 to_learn = {
     "phi_r": True,
     "phi_b": True,
-    "amp_r": False,
-    "amp_b": False,
+    "amp_r": LEARN_AMP_R,
+    "amp_b": LEARN_AMP_B,
 }
 
 if FAST_SMOKE:
@@ -91,7 +118,15 @@ rl_params = {
     "do_evaluation": do_evaluation,
     "eval_interval": eval_interval,
     "eval_batch_size": eval_batch_size,
+    "n_steps": n_steps,
+    "n_segments": n_segments,
     "learn_residuals": learn_residuals,
+    "phase_action_scale": PHASE_ACTION_SCALE,
+    "amp_action_scale": AMP_ACTION_SCALE,
+    "learn_amp_r": LEARN_AMP_R,
+    "learn_amp_b": LEARN_AMP_B,
+    "actor_fc_layers": ACTOR_FC_LAYERS,
+    "value_fc_layers": VALUE_FC_LAYERS,
     "action_script": action_script,
     "action_scale": action_scale,
     "to_learn": to_learn,
@@ -177,8 +212,8 @@ PPO.train_eval(
     ActorNet=actor_distribution_network.ActorDistributionNetwork,
     zero_means_kernel_initializer=False,
     init_action_stddev=PPO_INIT_STD,
-    actor_fc_layers=(50, 20),
-    value_fc_layers=(),
+    actor_fc_layers=ACTOR_FC_LAYERS,
+    value_fc_layers=VALUE_FC_LAYERS,
     use_rnn=False,
     actor_lstm_size=(12,),
     value_lstm_size=(12,),

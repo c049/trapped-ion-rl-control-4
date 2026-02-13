@@ -112,6 +112,44 @@ def _gkp_state(
     return (psi0 + np.exp(1j * rel_phase) * psi1).unit()
 
 
+def gkp_target_fock_statistics(
+    delta,
+    n_boson,
+    logical="0",
+    rel_phase=None,
+    squeeze_r=None,
+    envelope_kappa=None,
+    lattice_trunc=4,
+):
+    """
+    Return lightweight diagnostics for Fock-space truncation quality of the
+    finite-energy GKP target state.
+    """
+    target = _gkp_state(
+        delta=delta,
+        n_boson=n_boson,
+        logical=logical,
+        rel_phase=rel_phase,
+        squeeze_r=squeeze_r,
+        envelope_kappa=envelope_kappa,
+        lattice_trunc=lattice_trunc,
+    )
+    amp = np.asarray(target).reshape(-1)
+    probs = np.abs(amp) ** 2
+    probs = probs / float(np.sum(probs))
+    n_axis = np.arange(n_boson, dtype=float)
+    mean_n = float(np.sum(n_axis * probs))
+    tail_start = int(max(0, np.floor(0.9 * n_boson)))
+    tail_mass = float(np.sum(probs[tail_start:]))
+    edge_prob = float(probs[-1])
+    return {
+        "mean_n": mean_n,
+        "tail_start": tail_start,
+        "tail_mass": tail_mass,
+        "edge_prob": edge_prob,
+    }
+
+
 def _parity_operator(n_boson):
     return dq.parity(n_boson)
 
@@ -484,6 +522,12 @@ def trapped_ion_gkp_sim(
     a measurement-based reward derived from sampled characteristic values.
     """
     rng = np.random.default_rng(seed)
+    gkp_delta, gkp_logical = _resolve_gkp_params(
+        alpha_cat=alpha_cat,
+        cat_parity=cat_parity,
+        gkp_delta=gkp_delta,
+        gkp_logical=gkp_logical,
+    )
 
     if amp_r is None:
         omega_r = omega
@@ -652,6 +696,12 @@ def trapped_ion_gkp_sim_batch(
     gkp_lattice_trunc=4,
 ):
     rng = np.random.default_rng(seed)
+    gkp_delta, gkp_logical = _resolve_gkp_params(
+        alpha_cat=alpha_cat,
+        cat_parity=cat_parity,
+        gkp_delta=gkp_delta,
+        gkp_logical=gkp_logical,
+    )
 
     phi_r = np.asarray(phi_r, dtype=float)
     phi_b = np.asarray(phi_b, dtype=float)

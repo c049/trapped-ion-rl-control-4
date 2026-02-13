@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+#PBS -N qcrl_gkp
+#PBS -P mu61
+#PBS -q gpuvolta
+#PBS -l ncpus=12
+#PBS -l ngpus=1
+#PBS -l mem=32GB
+#PBS -l walltime=02:00:00
+#PBS -l jobfs=50GB
+#PBS -j oe
+#PBS -o /scratch/mu61/yl8164/quantum_control_rl_server/logs/qcrl_gkp_pbs.log
+
+set -euo pipefail
+set -x
+
+PROJECT="${PROJECT:-mu61}"
+VENV_ROOT="${VENV_ROOT:-/scratch/${PROJECT}/${USER}/qcrl_envs}"
+PROJECT_DIR="${PROJECT_DIR:-/scratch/${PROJECT}/${USER}/quantum_control_rl_server}"
+LOG_DIR="${PROJECT_DIR}/logs"
+
+PY_MOD="${PY_MOD:-python3/3.11.7}"
+CUDA_MOD="${CUDA_MOD:-cuda/12.2.2}"
+CUDNN_MOD="${CUDNN_MOD:-cudnn/8.9.7-cuda12}"
+
+module purge
+module load "${PY_MOD}"
+module load "${CUDA_MOD}"
+module load "${CUDNN_MOD}"
+
+echo "HOSTNAME: $(hostname)"
+echo "PROJECT_DIR: ${PROJECT_DIR}"
+if [[ ! -d "${PROJECT_DIR}" ]]; then
+  echo "ERROR: PROJECT_DIR does not exist: ${PROJECT_DIR}"
+  exit 1
+fi
+cd "${PROJECT_DIR}"
+mkdir -p "${LOG_DIR}"
+
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-12}"
+export PYTHONUNBUFFERED=1
+export MPLCONFIGDIR=/tmp/mpl
+mkdir -p "${MPLCONFIGDIR}"
+export H5LOG_FILENAME="${H5LOG_FILENAME:-$(date +%Y%m%d)_${PBS_JOBID}.gadi-pbs.h5}"
+
+export DQ_FORCE_GPU=1
+export JAX_PLATFORM_NAME=gpu
+export XLA_FLAGS="--xla_gpu_cuda_data_dir=/apps/cuda/12.2.2"
+export QCRL_SERIAL_SIM=0
+
+export GKP_DELTA="${GKP_DELTA:-0.301}"
+export GKP_LOGICAL="${GKP_LOGICAL:-0}"
+export GKP_LATTICE_TRUNC="${GKP_LATTICE_TRUNC:-4}"
+export N_BOSON="${N_BOSON:-40}"
+
+# Coarse-to-fine curriculum for a smoother landscape before final target delta.
+export GKP_DELTA_CURRICULUM="${GKP_DELTA_CURRICULUM:-0.42,0.36,0.301}"
+export GKP_DELTA_CURRICULUM_EPOCHS="${GKP_DELTA_CURRICULUM_EPOCHS:-700,1400}"
+
+export CHAR_START_MODE=radial_topk
+export CHAR_RADIAL_EXP=1.0
+export CHAR_ALPHA_SCALE=1.0
+export CHAR_ALPHA_SCALES=1.0
+export CHAR_SAMPLER_MODE=radial_stratified
+export CHAR_RADIAL_BINS=12
+export CHAR_UNIFORM_MIX=0.20
+# Paper-aligned importance sampling for characteristic estimator:
+# use |chi_target|^2 as the base sampling density.
+export CHAR_IMPORTANCE_POWER="${CHAR_IMPORTANCE_POWER:-2.0}"
+export CHAR_REWARD_OBJECTIVE=overlap_real
+# Keep training reward consistent by default; stage switching can be re-enabled
+# via env overrides for dedicated ablation runs.
+export CHAR_REWARD_OBJECTIVE_STAGE2=overlap_real
+export CHAR_REWARD_SWITCH_EPOCH=-1
+
+# Lattice/stabilizer anchors are important for GKP.
+export GKP_LATTICE_MIX="${GKP_LATTICE_MIX:-0.35}"
+export GKP_LATTICE_MIX_START="${GKP_LATTICE_MIX_START:-0.45}"
+export GKP_LATTICE_MIX_END="${GKP_LATTICE_MIX_END:-0.20}"
+export GKP_LATTICE_MIX_ANNEAL_EPOCHS="${GKP_LATTICE_MIX_ANNEAL_EPOCHS:-1600}"
+export GKP_LATTICE_TOPK_BOOST="${GKP_LATTICE_TOPK_BOOST:-1.5}"
+export GKP_LATTICE_ORDER="${GKP_LATTICE_ORDER:-3}"
+
+export TRAIN_STAGE1_EPOCHS=0
+export TRAIN_STAGE2_EPOCHS=180
+export TRAIN_POINTS_STAGE3=1400
+# Keep the stable pulse resolution used by previous >=0.97 runs.
+export N_STEPS=120
+export N_SEGMENTS=60
+
+export PHASE_CLIP=3.141592653589793
+export AMP_MIN=0.0
+export AMP_MAX=2.0
+export AMP_ACTION_SCALE=0.35
+# Stabilize PPO by learning phase controls first; amplitude can still be tuned
+# in final local search if explicitly enabled.
+export LEARN_AMP_R=0
+export LEARN_AMP_B=0
+
+export PPO_LR=3.0e-4
+export PPO_ENTROPY_REG=2.0e-4
+export PPO_INIT_STD=0.12
+export PPO_NUM_POLICY_UPDATES=10
+export ACTOR_FC_LAYERS="${ACTOR_FC_LAYERS:-128,64,32}"
+export VALUE_FC_LAYERS="${VALUE_FC_LAYERS:-}"
+export RANDOM_SEED="${RANDOM_SEED:-0}"
+export NUM_EPOCHS="${NUM_EPOCHS:-3200}"
+export EVAL_INTERVAL=10
+export TRAIN_FID_SCREEN_ENABLE="${TRAIN_FID_SCREEN_ENABLE:-1}"
+export TRAIN_FID_SCREEN_START_EPOCH="${TRAIN_FID_SCREEN_START_EPOCH:-1400}"
+export TRAIN_FID_SCREEN_INTERVAL="${TRAIN_FID_SCREEN_INTERVAL:-5}"
+export TRAIN_FID_SCREEN_TOPK="${TRAIN_FID_SCREEN_TOPK:-12}"
+export TRAIN_FID_SCREEN_RECORDS="${TRAIN_FID_SCREEN_RECORDS:-8}"
+
+export FINAL_REFINE_SAMPLES=3072
+export FINAL_REFINE_ROUNDS=10
+export FINAL_REFINE_TOPK=64
+export FINAL_REFINE_TOP_EVAL_CENTERS=6
+export FINAL_REFINE_SEED="${FINAL_REFINE_SEED:-1234}"
+export FINAL_REFINE_SCALE=0.9
+export FINAL_REFINE_DECAY=0.6
+export FINAL_REFINE_MIN_SIGMA=0.01
+export FINAL_REFINE_ENABLE_AMP=0
+export FINAL_REFINE_MIN_SIGMA_AMP=0.02
+export FINAL_REFINE_INIT_SIGMA_AMP=0.15
+export FINAL_REFINE_AMP_START_ROUND=4
+export FINAL_REFINE_USE_LOC_CENTER=1
+export FINAL_REFINE_USE_TRAIN_CENTER=1
+export FINAL_REFINE_USE_TRAIN_FID_CENTER=1
+export FINAL_REFINE_SEG_UPDATE_MODE=best
+export FINAL_REFINE_SEG_ELITE_FRACTION="${FINAL_REFINE_SEG_ELITE_FRACTION:-0.25}"
+export FINAL_REFINE_FULL_STEPS=1
+export FINAL_REFINE_FULL_SAMPLES=3072
+export FINAL_REFINE_FULL_ROUNDS=8
+export FINAL_REFINE_FULL_TOPK=96
+export FINAL_REFINE_FULL_CANDIDATES=4
+export FINAL_REFINE_FULL_SCALE=0.7
+export FINAL_REFINE_FULL_DECAY=0.65
+export FINAL_REFINE_FULL_MIN_SIGMA=0.0025
+export FINAL_REFINE_FULL_SIGMA_FACTOR=0.6
+export FINAL_REFINE_FULL_UPDATE_MODE=best
+export FINAL_REFINE_FULL_ELITE_FRACTION="${FINAL_REFINE_FULL_ELITE_FRACTION:-0.15}"
+export FINAL_REFINE_ELITE_WEIGHT_POWER="${FINAL_REFINE_ELITE_WEIGHT_POWER:-2.0}"
+export FINAL_POLISH_ENABLE=1
+export FINAL_POLISH_ITERS=420
+export FINAL_POLISH_TOP_CANDIDATES=1
+export FINAL_POLISH_INCLUDE_AMP=1
+export FINAL_POLISH_PHASE_A0=0.02
+export FINAL_POLISH_PHASE_C0=0.008
+export FINAL_POLISH_AMP_A0=0.003
+export FINAL_POLISH_AMP_C0=0.0015
+export FINAL_POLISH_ALPHA=0.602
+export FINAL_POLISH_GAMMA=0.101
+export FINAL_POLISH_PATIENCE=160
+export FINAL_POLISH_LOG_INTERVAL=10
+
+cd "${PROJECT_DIR}/examples/trapped_ion_gkp"
+
+(
+  source "${VENV_ROOT}/venv_tf/bin/activate"
+  python trapped_ion_gkp_training_server.py
+) > "${LOG_DIR}/server_${PBS_JOBID}.gadi-pbs.gkp-pbs.log" 2>&1 &
+SERVER_PID=$!
+
+SERVER_STARTUP_WAIT="${SERVER_STARTUP_WAIT:-600}"
+PORT=5555
+echo "Waiting for GKP server to open port ${PORT} (timeout ${SERVER_STARTUP_WAIT}s)..." >> "${LOG_DIR}/qcrl_gkp_pbs.log"
+READY=0
+for _ in $(seq 1 "${SERVER_STARTUP_WAIT}"); do
+  if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+    echo "GKP server process exited during startup. Check server log." >> "${LOG_DIR}/qcrl_gkp_pbs.log"
+    break
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    if ss -ltn | grep -q ":${PORT}"; then
+      READY=1
+      break
+    fi
+  elif command -v netstat >/dev/null 2>&1; then
+    if netstat -ltn 2>/dev/null | grep -q ":${PORT}"; then
+      READY=1
+      break
+    fi
+  fi
+  sleep 1
+done
+
+if [[ "${READY}" -ne 1 ]]; then
+  echo "GKP server did not become ready within ${SERVER_STARTUP_WAIT}s." >> "${LOG_DIR}/qcrl_gkp_pbs.log"
+  tail -n 80 "${LOG_DIR}/server_${PBS_JOBID}.gadi-pbs.gkp-pbs.log" >> "${LOG_DIR}/qcrl_gkp_pbs.log"
+  kill "${SERVER_PID}" 2>/dev/null || true
+  exit 1
+fi
+
+(
+  source "${VENV_ROOT}/venv_dq/bin/activate"
+  NVIDIA_LIBS=$(python3 - <<'PY'
+import site, glob, os
+sp = site.getsitepackages()[0]
+paths = glob.glob(os.path.join(sp, "nvidia", "*", "lib"))
+print(":".join(paths))
+PY
+)
+  export LD_LIBRARY_PATH="${NVIDIA_LIBS}:${LD_LIBRARY_PATH}"
+  echo "LD_LIBRARY_PATH for JAX: ${LD_LIBRARY_PATH}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  python trapped_ion_gkp_client.py
+) > "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log" 2>&1
+STATUS=$?
+
+kill "${SERVER_PID}" || true
+wait "${SERVER_PID}" || true
+exit "${STATUS}"
