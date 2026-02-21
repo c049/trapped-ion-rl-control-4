@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+#PBS -N qcrl_binomial
+#PBS -P mu61
+#PBS -q gpuvolta
+#PBS -l ncpus=12
+#PBS -l ngpus=1
+#PBS -l mem=32GB
+#PBS -l walltime=02:00:00
+#PBS -l jobfs=50GB
+#PBS -j oe
+#PBS -o /scratch/mu61/yl8164/quantum_control_rl_server/logs/qcrl_binomial_pbs.log
+
+set -euo pipefail
+set -x
+
+PROJECT="${PROJECT:-mu61}"
+VENV_ROOT="${VENV_ROOT:-/scratch/${PROJECT}/${USER}/qcrl_envs}"
+PROJECT_DIR="${PROJECT_DIR:-/scratch/${PROJECT}/${USER}/quantum_control_rl_server}"
+LOG_DIR="${PROJECT_DIR}/logs"
+
+PY_MOD="${PY_MOD:-python3/3.11.7}"
+CUDA_MOD="${CUDA_MOD:-cuda/12.2.2}"
+CUDNN_MOD="${CUDNN_MOD:-cudnn/8.9.7-cuda12}"
+
+module purge
+module load "${PY_MOD}"
+module load "${CUDA_MOD}"
+module load "${CUDNN_MOD}"
+
+echo "HOSTNAME: $(hostname)"
+echo "PROJECT_DIR: ${PROJECT_DIR}"
+if [[ ! -d "${PROJECT_DIR}" ]]; then
+  echo "ERROR: PROJECT_DIR does not exist: ${PROJECT_DIR}"
+  exit 1
+fi
+cd "${PROJECT_DIR}"
+mkdir -p "${LOG_DIR}"
+
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-12}"
+export PYTHONUNBUFFERED=1
+export MPLCONFIGDIR=/tmp/mpl
+mkdir -p "${MPLCONFIGDIR}"
+export H5LOG_FILENAME="${H5LOG_FILENAME:-$(date +%Y%m%d)_${PBS_JOBID}.binomial.h5}"
+
+export DQ_FORCE_GPU=1
+export JAX_PLATFORM_NAME=gpu
+export XLA_FLAGS="--xla_gpu_cuda_data_dir=/apps/cuda/12.2.2"
+export QCRL_SERIAL_SIM=0
+
+export N_BOSON="${N_BOSON:-30}"
+export BINOMIAL_CODE="${BINOMIAL_CODE:-d3_z}"
+export BINOMIAL_REL_PHASE="${BINOMIAL_REL_PHASE:-}"
+
+export CHAR_START_MODE="${CHAR_START_MODE:-radial_topk}"
+export CHAR_RADIAL_EXP="${CHAR_RADIAL_EXP:-1.0}"
+export CHAR_ALPHA_SCALE="${CHAR_ALPHA_SCALE:-1.0}"
+export CHAR_ALPHA_SCALES="${CHAR_ALPHA_SCALES:-1.0}"
+export CHAR_SAMPLER_MODE="${CHAR_SAMPLER_MODE:-radial_stratified}"
+export CHAR_RADIAL_BINS="${CHAR_RADIAL_BINS:-12}"
+export CHAR_UNIFORM_MIX="${CHAR_UNIFORM_MIX:-0.20}"
+# Stable default weighting: keep |chi_target| sampling linear unless explicitly tuning.
+export CHAR_IMPORTANCE_POWER="${CHAR_IMPORTANCE_POWER:-1.0}"
+export CHAR_REWARD_OBJECTIVE="${CHAR_REWARD_OBJECTIVE:-overlap_real}"
+export CHAR_REWARD_OBJECTIVE_STAGE2="${CHAR_REWARD_OBJECTIVE_STAGE2:-}"
+export CHAR_REWARD_SWITCH_EPOCH="${CHAR_REWARD_SWITCH_EPOCH:--1}"
+export CHAR_USE_FIXED_REWARD_NORM="${CHAR_USE_FIXED_REWARD_NORM:-0}"
+export CHAR_REWARD_SWITCH_MIN_BEST_EVAL="${CHAR_REWARD_SWITCH_MIN_BEST_EVAL:-0.90}"
+export CHAR_REWARD_STAGE2_PATIENCE_EVAL="${CHAR_REWARD_STAGE2_PATIENCE_EVAL:-12}"
+export CHAR_REWARD_STAGE2_MIN_GAIN="${CHAR_REWARD_STAGE2_MIN_GAIN:-0.01}"
+export CHAR_REWARD_STAGE2_ALLOW_REVERT="${CHAR_REWARD_STAGE2_ALLOW_REVERT:-1}"
+export CHAR_REWARD_AUTO_RESCALE="${CHAR_REWARD_AUTO_RESCALE:-1}"
+export CHAR_REWARD_AUTO_RESCALE_TARGET_P90="${CHAR_REWARD_AUTO_RESCALE_TARGET_P90:-1.0}"
+export CHAR_REWARD_AUTO_RESCALE_TRIGGER_P90="${CHAR_REWARD_AUTO_RESCALE_TRIGGER_P90:-3.0}"
+
+export N_STEPS="${N_STEPS:-120}"
+export N_SEGMENTS="${N_SEGMENTS:-60}"
+export T_STEP="${T_STEP:-10.0}"
+export TRAIN_STAGE1_EPOCHS="${TRAIN_STAGE1_EPOCHS:-0}"
+export TRAIN_STAGE2_EPOCHS="${TRAIN_STAGE2_EPOCHS:-180}"
+export TRAIN_POINTS_STAGE1="${TRAIN_POINTS_STAGE1:-120}"
+export TRAIN_POINTS_STAGE2="${TRAIN_POINTS_STAGE2:-240}"
+export TRAIN_POINTS_STAGE3="${TRAIN_POINTS_STAGE3:-1200}"
+
+export PHASE_CLIP="${PHASE_CLIP:-3.141592653589793}"
+export AMP_MIN="${AMP_MIN:-0.0}"
+export AMP_MAX="${AMP_MAX:-2.0}"
+export PHASE_ACTION_SCALE="${PHASE_ACTION_SCALE:-3.141592653589793}"
+export AMP_ACTION_SCALE="${AMP_ACTION_SCALE:-1.0}"
+export LEARN_PHI_R="${LEARN_PHI_R:-1}"
+export LEARN_PHI_B="${LEARN_PHI_B:-1}"
+export LEARN_AMP_R="${LEARN_AMP_R:-0}"
+export LEARN_AMP_B="${LEARN_AMP_B:-0}"
+export INIT_PULSES_NPZ="${INIT_PULSES_NPZ:-}"
+export INIT_PULSE_BLEND="${INIT_PULSE_BLEND:-1.0}"
+export ACTOR_FC_LAYERS="${ACTOR_FC_LAYERS:-128,64,32}"
+export VALUE_FC_LAYERS="${VALUE_FC_LAYERS:-}"
+
+export PPO_LR="${PPO_LR:-3.0e-4}"
+export PPO_ENTROPY_REG="${PPO_ENTROPY_REG:-2.0e-4}"
+export PPO_INIT_STD="${PPO_INIT_STD:-0.12}"
+export PPO_NUM_POLICY_UPDATES="${PPO_NUM_POLICY_UPDATES:-10}"
+export RANDOM_SEED="${RANDOM_SEED:-0}"
+export NUM_EPOCHS="${NUM_EPOCHS:-2200}"
+export EVAL_INTERVAL="${EVAL_INTERVAL:-10}"
+
+export FINAL_REFINE_SAMPLES="${FINAL_REFINE_SAMPLES:-1536}"
+export FINAL_REFINE_ROUNDS="${FINAL_REFINE_ROUNDS:-10}"
+export FINAL_REFINE_TOPK="${FINAL_REFINE_TOPK:-48}"
+export FINAL_REFINE_TOP_EVAL_CENTERS="${FINAL_REFINE_TOP_EVAL_CENTERS:-4}"
+export FINAL_REFINE_SEED="${FINAL_REFINE_SEED:-1234}"
+export FINAL_REFINE_SCALE="${FINAL_REFINE_SCALE:-0.9}"
+export FINAL_REFINE_DECAY="${FINAL_REFINE_DECAY:-0.6}"
+export FINAL_REFINE_MIN_SIGMA="${FINAL_REFINE_MIN_SIGMA:-0.01}"
+export FINAL_REFINE_ENABLE_AMP="${FINAL_REFINE_ENABLE_AMP:-1}"
+export FINAL_REFINE_MIN_SIGMA_AMP="${FINAL_REFINE_MIN_SIGMA_AMP:-0.02}"
+export FINAL_REFINE_INIT_SIGMA_AMP="${FINAL_REFINE_INIT_SIGMA_AMP:-0.15}"
+export FINAL_REFINE_AMP_START_ROUND="${FINAL_REFINE_AMP_START_ROUND:-3}"
+export FINAL_REFINE_USE_LOC_CENTER="${FINAL_REFINE_USE_LOC_CENTER:-1}"
+export FINAL_REFINE_USE_TRAIN_CENTER="${FINAL_REFINE_USE_TRAIN_CENTER:-1}"
+export FINAL_REFINE_FULL_STEPS="${FINAL_REFINE_FULL_STEPS:-1}"
+export FINAL_REFINE_FULL_SAMPLES="${FINAL_REFINE_FULL_SAMPLES:-2048}"
+export FINAL_REFINE_FULL_ROUNDS="${FINAL_REFINE_FULL_ROUNDS:-8}"
+export FINAL_REFINE_FULL_TOPK="${FINAL_REFINE_FULL_TOPK:-80}"
+export FINAL_REFINE_FULL_SCALE="${FINAL_REFINE_FULL_SCALE:-0.7}"
+export FINAL_REFINE_FULL_DECAY="${FINAL_REFINE_FULL_DECAY:-0.65}"
+export FINAL_REFINE_FULL_MIN_SIGMA="${FINAL_REFINE_FULL_MIN_SIGMA:-0.0025}"
+export FINAL_REFINE_FULL_SIGMA_FACTOR="${FINAL_REFINE_FULL_SIGMA_FACTOR:-0.6}"
+export FINAL_REFINE_FULL_ENABLE_AMP="${FINAL_REFINE_FULL_ENABLE_AMP:-1}"
+export FINAL_REFINE_FULL_MIN_SIGMA_AMP="${FINAL_REFINE_FULL_MIN_SIGMA_AMP:-0.0015}"
+export FINAL_REFINE_FULL_SIGMA_FACTOR_AMP="${FINAL_REFINE_FULL_SIGMA_FACTOR_AMP:-0.6}"
+
+cd "${PROJECT_DIR}/examples/trapped_ion_binomial"
+
+(
+  source "${VENV_ROOT}/venv_tf/bin/activate"
+  python trapped_ion_binomial_training_server.py
+) > "${LOG_DIR}/server_${PBS_JOBID}.gadi-pbs.binomial-pbs.log" 2>&1 &
+SERVER_PID=$!
+
+SERVER_STARTUP_WAIT="${SERVER_STARTUP_WAIT:-600}"
+PORT=5555
+echo "Waiting for binomial server to open port ${PORT} (timeout ${SERVER_STARTUP_WAIT}s)..." >> "${LOG_DIR}/qcrl_binomial_pbs.log"
+READY=0
+for _ in $(seq 1 "${SERVER_STARTUP_WAIT}"); do
+  if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+    echo "Binomial server process exited during startup. Check server log." >> "${LOG_DIR}/qcrl_binomial_pbs.log"
+    break
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    if ss -ltn | grep -q ":${PORT}"; then
+      READY=1
+      break
+    fi
+  elif command -v netstat >/dev/null 2>&1; then
+    if netstat -ltn 2>/dev/null | grep -q ":${PORT}"; then
+      READY=1
+      break
+    fi
+  fi
+  sleep 1
+done
+
+if [[ "${READY}" -ne 1 ]]; then
+  echo "Binomial server did not become ready within ${SERVER_STARTUP_WAIT}s." >> "${LOG_DIR}/qcrl_binomial_pbs.log"
+  tail -n 80 "${LOG_DIR}/server_${PBS_JOBID}.gadi-pbs.binomial-pbs.log" >> "${LOG_DIR}/qcrl_binomial_pbs.log"
+  kill "${SERVER_PID}" 2>/dev/null || true
+  exit 1
+fi
+
+(
+  source "${VENV_ROOT}/venv_dq/bin/activate"
+  NVIDIA_LIBS=$(python3 - <<'PY'
+import site, glob, os
+sp = site.getsitepackages()[0]
+paths = glob.glob(os.path.join(sp, "nvidia", "*", "lib"))
+print(":".join(paths))
+PY
+)
+  export LD_LIBRARY_PATH="${NVIDIA_LIBS}:${LD_LIBRARY_PATH}"
+  echo "LD_LIBRARY_PATH for JAX: ${LD_LIBRARY_PATH}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.binomial-pbs.log"
+  echo "Run config: BINOMIAL_CODE=${BINOMIAL_CODE} BINOMIAL_REL_PHASE=${BINOMIAL_REL_PHASE}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.binomial-pbs.log"
+  echo "Run config: N_STEPS=${N_STEPS} N_SEGMENTS=${N_SEGMENTS} T_STEP=${T_STEP} N_BOSON=${N_BOSON}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.binomial-pbs.log"
+  echo "Run config: LEARN_AMP_R=${LEARN_AMP_R} LEARN_AMP_B=${LEARN_AMP_B} PHASE_ACTION_SCALE=${PHASE_ACTION_SCALE} AMP_ACTION_SCALE=${AMP_ACTION_SCALE}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.binomial-pbs.log"
+  echo "Run config: INIT_PULSES_NPZ=${INIT_PULSES_NPZ} INIT_PULSE_BLEND=${INIT_PULSE_BLEND}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.binomial-pbs.log"
+  echo "Run config: NUM_EPOCHS=${NUM_EPOCHS} PPO_LR=${PPO_LR} PPO_ENTROPY_REG=${PPO_ENTROPY_REG} PPO_INIT_STD=${PPO_INIT_STD}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.binomial-pbs.log"
+  echo "Run config: CHAR_REWARD_OBJECTIVE=${CHAR_REWARD_OBJECTIVE} CHAR_REWARD_OBJECTIVE_STAGE2=${CHAR_REWARD_OBJECTIVE_STAGE2} CHAR_REWARD_SWITCH_EPOCH=${CHAR_REWARD_SWITCH_EPOCH}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.binomial-pbs.log"
+  echo "Run config: CHAR_REWARD_SWITCH_MIN_BEST_EVAL=${CHAR_REWARD_SWITCH_MIN_BEST_EVAL} STAGE2_PATIENCE_EVAL=${CHAR_REWARD_STAGE2_PATIENCE_EVAL} STAGE2_MIN_GAIN=${CHAR_REWARD_STAGE2_MIN_GAIN} STAGE2_ALLOW_REVERT=${CHAR_REWARD_STAGE2_ALLOW_REVERT}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.binomial-pbs.log"
+  echo "Run config: CHAR_IMPORTANCE_POWER=${CHAR_IMPORTANCE_POWER} FIXED_REWARD_NORM=${CHAR_USE_FIXED_REWARD_NORM} AUTO_RESCALE=${CHAR_REWARD_AUTO_RESCALE} AUTO_RESCALE_TARGET_P90=${CHAR_REWARD_AUTO_RESCALE_TARGET_P90} AUTO_RESCALE_TRIGGER_P90=${CHAR_REWARD_AUTO_RESCALE_TRIGGER_P90} TRAIN_POINTS_STAGE3=${TRAIN_POINTS_STAGE3}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.binomial-pbs.log"
+  echo "Run config: FINAL_REFINE_ENABLE_AMP=${FINAL_REFINE_ENABLE_AMP} FINAL_REFINE_FULL_STEPS=${FINAL_REFINE_FULL_STEPS} FINAL_REFINE_FULL_ENABLE_AMP=${FINAL_REFINE_FULL_ENABLE_AMP}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.binomial-pbs.log"
+  python trapped_ion_binomial_client.py
+) > "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.binomial-pbs.log" 2>&1
+STATUS=$?
+
+kill "${SERVER_PID}" || true
+wait "${SERVER_PID}" || true
+exit "${STATUS}"

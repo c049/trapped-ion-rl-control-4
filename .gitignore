@@ -138,6 +138,9 @@ logdir/
 
 # Per-run evaluation artifacts
 examples/trapped_ion_cat/eval_fidelity.csv
+examples/trapped_ion_binomial/eval_fidelity.csv
+examples/trapped_ion_binomial/eval_robust_metrics.csv
+examples/trapped_ion_binomial/penalty_sweep/
 
 *.pdf
 

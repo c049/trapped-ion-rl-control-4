@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+#PBS -N qcrl_binom_sw
+#PBS -P mu61
+#PBS -q gpuvolta
+#PBS -l ncpus=12
+#PBS -l ngpus=1
+#PBS -l mem=32GB
+#PBS -l walltime=02:00:00
+#PBS -l jobfs=50GB
+#PBS -j oe
+#PBS -o /scratch/mu61/yl8164/quantum_control_rl_server/logs/qcrl_binomial_sweep_pbs.log
+
+set -euo pipefail
+set -x
+
+PROJECT="${PROJECT:-mu61}"
+PROJECT_DIR="${PROJECT_DIR:-/scratch/${PROJECT}/${USER}/quantum_control_rl_server}"
+BINOMIAL_DIR="${PROJECT_DIR}/examples/trapped_ion_binomial"
+LOG_DIR="${PROJECT_DIR}/logs"
+SWEEP_ROOT="${SWEEP_ROOT:-${BINOMIAL_DIR}/penalty_sweep/default}"
+SWEEP_TAG="${SWEEP_TAG:-penalty_${ROBUST_FLOOR_PENALTY:-unset}}"
+RUN_DIR="${SWEEP_ROOT}/${SWEEP_TAG}"
+
+mkdir -p "${RUN_DIR}"
+mkdir -p "${LOG_DIR}"
+
+copy_if_exists() {
+  local src="$1"
+  local dst="$2"
+  if [[ -f "${src}" ]]; then
+    cp -f "${src}" "${dst}"
+  fi
+}
+
+export ROBUST_TRAINING="${ROBUST_TRAINING:-1}"
+export DEPHASE_MODEL="${DEPHASE_MODEL:-quasi_static}"
+export DEPHASE_DETUNING_FRAC="${DEPHASE_DETUNING_FRAC:-0.05}"
+export DEPHASE_NOISE_SAMPLES_TRAIN="${DEPHASE_NOISE_SAMPLES_TRAIN:-6}"
+export DEPHASE_NOISE_SAMPLES_EVAL="${DEPHASE_NOISE_SAMPLES_EVAL:-12}"
+export DEPHASE_NOISE_SAMPLES_REFINE="${DEPHASE_NOISE_SAMPLES_REFINE:-16}"
+export DEPHASE_INCLUDE_NOMINAL="${DEPHASE_INCLUDE_NOMINAL:-1}"
+export ROBUST_NOMINAL_FID_FLOOR="${ROBUST_NOMINAL_FID_FLOOR:-0.985}"
+export ROBUST_FLOOR_PENALTY="${ROBUST_FLOOR_PENALTY:-0.0}"
+export ROBUST_COMPARE_BASELINE_NPZ="${ROBUST_COMPARE_BASELINE_NPZ:-${BINOMIAL_DIR}/checkpoint/final_pulses_best.npz}"
+
+echo "Sweep run: tag=${SWEEP_TAG} penalty=${ROBUST_FLOOR_PENALTY}" | tee "${RUN_DIR}/run_info.txt"
+echo "Sweep root: ${SWEEP_ROOT}" | tee -a "${RUN_DIR}/run_info.txt"
+echo "Baseline NPZ: ${ROBUST_COMPARE_BASELINE_NPZ}" | tee -a "${RUN_DIR}/run_info.txt"
+echo "Job ID: ${PBS_JOBID:-none}" | tee -a "${RUN_DIR}/run_info.txt"
+
+set +e
+bash "${PROJECT_DIR}/gadi/run_job_binomial.pbs"
+STATUS=$?
+set -e
+
+if [[ -n "${PBS_JOBID:-}" ]]; then
+  copy_if_exists "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.binomial-pbs.log" "${RUN_DIR}/client_${PBS_JOBID}.log"
+  copy_if_exists "${LOG_DIR}/server_${PBS_JOBID}.gadi-pbs.binomial-pbs.log" "${RUN_DIR}/server_${PBS_JOBID}.log"
+fi
+copy_if_exists "${LOG_DIR}/qcrl_binomial_pbs.log" "${RUN_DIR}/qcrl_binomial_pbs.log"
+
+copy_if_exists "${BINOMIAL_DIR}/outputs/final_fidelity.txt" "${RUN_DIR}/final_fidelity.txt"
+copy_if_exists "${BINOMIAL_DIR}/outputs/final_robust_score.txt" "${RUN_DIR}/final_robust_score.txt"
+copy_if_exists "${BINOMIAL_DIR}/outputs/final_pulses.npz" "${RUN_DIR}/final_pulses.npz"
+copy_if_exists "${BINOMIAL_DIR}/outputs/dephasing_sweep_robust.csv" "${RUN_DIR}/dephasing_sweep_robust.csv"
+copy_if_exists "${BINOMIAL_DIR}/outputs/dephasing_sweep_robust.png" "${RUN_DIR}/dephasing_sweep_robust.png"
+copy_if_exists "${BINOMIAL_DIR}/outputs/dephasing_compare.csv" "${RUN_DIR}/dephasing_compare.csv"
+copy_if_exists "${BINOMIAL_DIR}/outputs/dephasing_compare.png" "${RUN_DIR}/dephasing_compare.png"
+copy_if_exists "${BINOMIAL_DIR}/outputs/char_target_vs_final.png" "${RUN_DIR}/char_target_vs_final.png"
+copy_if_exists "${BINOMIAL_DIR}/eval_fidelity.csv" "${RUN_DIR}/eval_fidelity.csv"
+copy_if_exists "${BINOMIAL_DIR}/eval_robust_metrics.csv" "${RUN_DIR}/eval_robust_metrics.csv"
+
+cat > "${RUN_DIR}/manifest.env" <<EOF
+PBS_JOBID=${PBS_JOBID:-}
+SWEEP_TAG=${SWEEP_TAG}
+ROBUST_FLOOR_PENALTY=${ROBUST_FLOOR_PENALTY}
+ROBUST_TRAINING=${ROBUST_TRAINING}
+DEPHASE_MODEL=${DEPHASE_MODEL}
+DEPHASE_DETUNING_FRAC=${DEPHASE_DETUNING_FRAC}
+DEPHASE_NOISE_SAMPLES_TRAIN=${DEPHASE_NOISE_SAMPLES_TRAIN}
+DEPHASE_NOISE_SAMPLES_EVAL=${DEPHASE_NOISE_SAMPLES_EVAL}
+DEPHASE_NOISE_SAMPLES_REFINE=${DEPHASE_NOISE_SAMPLES_REFINE}
+DEPHASE_INCLUDE_NOMINAL=${DEPHASE_INCLUDE_NOMINAL}
+ROBUST_NOMINAL_FID_FLOOR=${ROBUST_NOMINAL_FID_FLOOR}
+ROBUST_COMPARE_BASELINE_NPZ=${ROBUST_COMPARE_BASELINE_NPZ}
+STATUS=${STATUS}
+EOF
+
+exit "${STATUS}"

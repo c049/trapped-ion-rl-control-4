@@ -17,23 +17,19 @@ from quantum_control_rl_server import remote_env_tools as rmt
 from quantum_control_rl_server.h5log import h5log
 
 root_dir = os.getcwd()
-host_ip = os.environ.get("QCRL_HOST", "127.0.0.1").strip() or "127.0.0.1"
-port = int(os.environ.get("QCRL_PORT", "5555"))
-if port <= 0 or port > 65535:
-    raise ValueError(f"QCRL_PORT must be in [1,65535], got {port}")
+host_ip = os.environ.get("HOST", "127.0.0.1")
+host_port = int(os.environ.get("PORT", "5555"))
 
 FAST_SMOKE = os.environ.get("FAST_SMOKE", "0") == "1"
-PPO_LR = float(os.environ.get("PPO_LR", "3.0e-4"))
-PPO_ENTROPY_REG = float(os.environ.get("PPO_ENTROPY_REG", "2.0e-4"))
-PPO_INIT_STD = float(os.environ.get("PPO_INIT_STD", "0.12"))
-PPO_NUM_POLICY_UPDATES = int(os.environ.get("PPO_NUM_POLICY_UPDATES", "10"))
+PPO_LR = float(os.environ.get("PPO_LR", "1.0e-4"))
+PPO_ENTROPY_REG = float(os.environ.get("PPO_ENTROPY_REG", "5.0e-3"))
+PPO_INIT_STD = float(os.environ.get("PPO_INIT_STD", "0.3"))
+PPO_NUM_POLICY_UPDATES = int(os.environ.get("PPO_NUM_POLICY_UPDATES", "20"))
 RANDOM_SEED = int(os.environ.get("RANDOM_SEED", "0"))
-num_epochs = int(os.environ.get("NUM_EPOCHS", "2000"))
+num_epochs = int(os.environ.get("NUM_EPOCHS", "300"))
 train_batch_size = int(os.environ.get("TRAIN_BATCH_SIZE", "160"))
-N_STEPS = int(os.environ.get("N_STEPS", "120"))
-N_SEGMENTS = int(os.environ.get("N_SEGMENTS", "60"))
 PHASE_ACTION_SCALE = float(os.environ.get("PHASE_ACTION_SCALE", str(np.pi)))
-AMP_ACTION_SCALE = float(os.environ.get("AMP_ACTION_SCALE", "0.35"))
+AMP_ACTION_SCALE = float(os.environ.get("AMP_ACTION_SCALE", "1.0"))
 LEARN_AMP_R = os.environ.get("LEARN_AMP_R", "0") == "1"
 LEARN_AMP_B = os.environ.get("LEARN_AMP_B", "0") == "1"
 INIT_PULSES_NPZ = os.environ.get("INIT_PULSES_NPZ", "").strip()
@@ -61,38 +57,27 @@ num_policy_updates = PPO_NUM_POLICY_UPDATES
 learn_residuals = True
 save_tf_style = False
 
-if N_SEGMENTS <= 0 or N_STEPS <= 0:
-    raise ValueError("N_STEPS and N_SEGMENTS must both be positive.")
-if N_STEPS % N_SEGMENTS != 0:
+n_steps = int(os.environ.get("N_STEPS", "120"))
+n_segments = int(os.environ.get("N_SEGMENTS", "60"))
+if n_steps <= 0 or n_segments <= 0:
+    raise ValueError("N_STEPS and N_SEGMENTS must be positive.")
+if n_steps % n_segments != 0:
     raise ValueError(
-        f"N_STEPS ({N_STEPS}) must be divisible by N_SEGMENTS ({N_SEGMENTS})."
+        f"N_STEPS ({n_steps}) must be divisible by N_SEGMENTS ({n_segments})."
     )
-
-n_steps = N_STEPS
-n_segments = N_SEGMENTS
 init_phi_r = list(np.zeros(n_segments))
 init_phi_b = list(np.zeros(n_segments))
 init_amp_r = list(np.ones(n_segments))
 init_amp_b = list(np.ones(n_segments))
 
-
 def _segment_phase_from_full(arr, n_segments):
     vals = np.asarray(arr, dtype=float).reshape(-1)
     if vals.size == n_segments:
         return vals.copy()
-    if n_segments % vals.size == 0:
-        # Exact integer upsampling: preserve the piecewise-constant waveform
-        # shape when moving from lower to higher segment resolution.
-        rep = n_segments // vals.size
-        return np.repeat(vals, rep)
     if vals.size % n_segments == 0:
         seg_len = vals.size // n_segments
         reshaped = vals.reshape(n_segments, seg_len)
         return np.angle(np.mean(np.exp(1j * reshaped), axis=1))
-
-    # Fallback for mismatched resolution: interpolate unwrapped phase in time,
-    # then wrap back to [-pi, pi]. This enables warm-start across different
-    # N_STEPS/N_SEGMENTS settings.
     src = np.arange(vals.size, dtype=float)
     dst = (np.arange(n_segments, dtype=float) + 0.5) * (vals.size / n_segments) - 0.5
     dst = np.clip(dst, 0.0, max(float(vals.size - 1), 0.0))
@@ -105,133 +90,69 @@ def _segment_amp_from_full(arr, n_segments):
     vals = np.asarray(arr, dtype=float).reshape(-1)
     if vals.size == n_segments:
         return vals.copy()
-    if n_segments % vals.size == 0:
-        rep = n_segments // vals.size
-        return np.repeat(vals, rep)
     if vals.size % n_segments == 0:
         seg_len = vals.size // n_segments
         reshaped = vals.reshape(n_segments, seg_len)
         return np.mean(reshaped, axis=1)
-
     src = np.arange(vals.size, dtype=float)
     dst = (np.arange(n_segments, dtype=float) + 0.5) * (vals.size / n_segments) - 0.5
     dst = np.clip(dst, 0.0, max(float(vals.size - 1), 0.0))
     return np.interp(dst, src, vals)
 
 
-def _resolve_init_pulse_path(path_raw, work_root):
-    requested = (
-        path_raw if os.path.isabs(path_raw) else os.path.join(work_root, path_raw)
-    )
-    basename = os.path.basename(path_raw)
-    candidates = [requested]
-    if basename:
-        candidates.append(os.path.join(work_root, "checkpoint", basename))
-        candidates.append(os.path.join(work_root, "outputs", basename))
-    candidates.append(os.path.join(work_root, "checkpoint", "final_pulses_best.npz"))
-    candidates.append(os.path.join(work_root, "outputs", "final_pulses.npz"))
-
-    unique_candidates = []
-    seen = set()
-    for cand in candidates:
-        norm = os.path.normpath(cand)
-        if norm in seen:
-            continue
-        seen.add(norm)
-        unique_candidates.append(cand)
-        if os.path.exists(cand):
-            return cand, requested, unique_candidates
-    return "", requested, unique_candidates
-
-
 if not np.isfinite(INIT_PULSE_BLEND) or INIT_PULSE_BLEND < 0.0 or INIT_PULSE_BLEND > 1.0:
-    raise ValueError(
-        f"INIT_PULSE_BLEND must be in [0,1], got {INIT_PULSE_BLEND}"
-    )
+    raise ValueError(f"INIT_PULSE_BLEND must be in [0,1], got {INIT_PULSE_BLEND}")
 
 if INIT_PULSES_NPZ:
-    pulse_path, requested_pulse_path, searched_candidates = _resolve_init_pulse_path(
-        INIT_PULSES_NPZ, root_dir
+    pulse_path = (
+        INIT_PULSES_NPZ
+        if os.path.isabs(INIT_PULSES_NPZ)
+        else os.path.join(root_dir, INIT_PULSES_NPZ)
     )
-    if pulse_path == "":
-        print(
-            "WARNING: INIT_PULSES_NPZ requested but not found; warm-start disabled. "
-            "requested=%s searched=%s"
-            % (requested_pulse_path, searched_candidates)
+    if not os.path.exists(pulse_path):
+        raise FileNotFoundError(f"INIT_PULSES_NPZ not found: {pulse_path}")
+    with np.load(pulse_path) as pulse_data:
+        req = ("phi_r", "phi_b", "amp_r", "amp_b")
+        missing = [k for k in req if k not in pulse_data]
+        if missing:
+            raise ValueError(f"INIT_PULSES_NPZ missing keys {missing} in {pulse_path}")
+        raw_phi_r = np.asarray(pulse_data["phi_r"], dtype=float).reshape(-1)
+        raw_phi_b = np.asarray(pulse_data["phi_b"], dtype=float).reshape(-1)
+        raw_amp_r = np.asarray(pulse_data["amp_r"], dtype=float).reshape(-1)
+        raw_amp_b = np.asarray(pulse_data["amp_b"], dtype=float).reshape(-1)
+        init_phi_r_loaded = _segment_phase_from_full(raw_phi_r, n_segments)
+        init_phi_b_loaded = _segment_phase_from_full(raw_phi_b, n_segments)
+        init_amp_r_loaded = _segment_amp_from_full(raw_amp_r, n_segments)
+        init_amp_b_loaded = _segment_amp_from_full(raw_amp_b, n_segments)
+    init_phi_r = list(
+        (1.0 - INIT_PULSE_BLEND) * np.asarray(init_phi_r, dtype=float)
+        + INIT_PULSE_BLEND * init_phi_r_loaded
+    )
+    init_phi_b = list(
+        (1.0 - INIT_PULSE_BLEND) * np.asarray(init_phi_b, dtype=float)
+        + INIT_PULSE_BLEND * init_phi_b_loaded
+    )
+    init_amp_r = list(
+        (1.0 - INIT_PULSE_BLEND) * np.asarray(init_amp_r, dtype=float)
+        + INIT_PULSE_BLEND * init_amp_r_loaded
+    )
+    init_amp_b = list(
+        (1.0 - INIT_PULSE_BLEND) * np.asarray(init_amp_b, dtype=float)
+        + INIT_PULSE_BLEND * init_amp_b_loaded
+    )
+    print(
+        "Warm-start enabled: INIT_PULSES_NPZ=%s blend=%.3f "
+        "(source lens: phi_r=%d phi_b=%d amp_r=%d amp_b=%d -> segments=%d)"
+        % (
+            pulse_path,
+            INIT_PULSE_BLEND,
+            len(raw_phi_r),
+            len(raw_phi_b),
+            len(raw_amp_r),
+            len(raw_amp_b),
+            n_segments,
         )
-    else:
-        try:
-            with np.load(pulse_path) as pulse_data:
-                req = ("phi_r", "phi_b", "amp_r", "amp_b")
-                missing = [k for k in req if k not in pulse_data]
-                if missing:
-                    raise ValueError(
-                        f"INIT_PULSES_NPZ missing keys {missing} in {pulse_path}"
-                    )
-                raw_phi_r = np.asarray(pulse_data["phi_r"], dtype=float).reshape(-1)
-                raw_phi_b = np.asarray(pulse_data["phi_b"], dtype=float).reshape(-1)
-                raw_amp_r = np.asarray(pulse_data["amp_r"], dtype=float).reshape(-1)
-                raw_amp_b = np.asarray(pulse_data["amp_b"], dtype=float).reshape(-1)
-                init_phi_r_loaded = _segment_phase_from_full(raw_phi_r, n_segments)
-                init_phi_b_loaded = _segment_phase_from_full(raw_phi_b, n_segments)
-                init_amp_r_loaded = _segment_amp_from_full(raw_amp_r, n_segments)
-                init_amp_b_loaded = _segment_amp_from_full(raw_amp_b, n_segments)
-        except Exception as exc:
-            print(
-                "WARNING: Failed to load INIT_PULSES_NPZ=%s (%s); "
-                "warm-start disabled for this run."
-                % (pulse_path, exc)
-            )
-        else:
-            source_lens = (len(raw_phi_r), len(raw_phi_b), len(raw_amp_r), len(raw_amp_b))
-            if any(src_len != n_segments for src_len in source_lens):
-                print(
-                    "WARNING: Warm-start resolution mismatch: source lens "
-                    "phi_r=%d phi_b=%d amp_r=%d amp_b=%d, run segments=%d. "
-                    "If this source came from a different N_STEPS/N_SEGMENTS, "
-                    "it can reduce initial fidelity."
-                    % (
-                        source_lens[0],
-                        source_lens[1],
-                        source_lens[2],
-                        source_lens[3],
-                        n_segments,
-                    )
-                )
-            init_phi_r = list(
-                (1.0 - INIT_PULSE_BLEND) * np.asarray(init_phi_r, dtype=float)
-                + INIT_PULSE_BLEND * init_phi_r_loaded
-            )
-            init_phi_b = list(
-                (1.0 - INIT_PULSE_BLEND) * np.asarray(init_phi_b, dtype=float)
-                + INIT_PULSE_BLEND * init_phi_b_loaded
-            )
-            init_amp_r = list(
-                (1.0 - INIT_PULSE_BLEND) * np.asarray(init_amp_r, dtype=float)
-                + INIT_PULSE_BLEND * init_amp_r_loaded
-            )
-            init_amp_b = list(
-                (1.0 - INIT_PULSE_BLEND) * np.asarray(init_amp_b, dtype=float)
-                + INIT_PULSE_BLEND * init_amp_b_loaded
-            )
-            if pulse_path != requested_pulse_path:
-                print(
-                    "Warm-start fallback: requested=%s using=%s"
-                    % (requested_pulse_path, pulse_path)
-                )
-            print(
-                "Warm-start enabled: INIT_PULSES_NPZ=%s blend=%.3f "
-                "(source lens: phi_r=%d phi_b=%d amp_r=%d amp_b=%d -> segments=%d)"
-                % (
-                    pulse_path,
-                    INIT_PULSE_BLEND,
-                    len(raw_phi_r),
-                    len(raw_phi_b),
-                    len(raw_amp_r),
-                    len(raw_amp_b),
-                    n_segments,
-                )
-            )
+    )
 
 phase_scale = list(np.ones(n_segments, dtype=float) * PHASE_ACTION_SCALE)
 amp_scale = list(np.ones(n_segments, dtype=float) * AMP_ACTION_SCALE)
@@ -258,8 +179,8 @@ action_scale = {
 }
 
 to_learn = {
-    "phi_r": True,
-    "phi_b": True,
+    "phi_r": os.environ.get("LEARN_PHI_R", "1") == "1",
+    "phi_b": os.environ.get("LEARN_PHI_B", "1") == "1",
     "amp_r": LEARN_AMP_R,
     "amp_b": LEARN_AMP_B,
 }
@@ -276,13 +197,15 @@ tf.random.set_seed(RANDOM_SEED)
 
 rl_params = {
     "random_seed": RANDOM_SEED,
+    "host": host_ip,
+    "port": host_port,
     "num_epochs": num_epochs,
     "train_batch_size": train_batch_size,
+    "n_steps": n_steps,
+    "n_segments": n_segments,
     "do_evaluation": do_evaluation,
     "eval_interval": eval_interval,
     "eval_batch_size": eval_batch_size,
-    "n_steps": n_steps,
-    "n_segments": n_segments,
     "learn_residuals": learn_residuals,
     "phase_action_scale": PHASE_ACTION_SCALE,
     "amp_action_scale": AMP_ACTION_SCALE,
@@ -303,7 +226,8 @@ log = h5log(root_dir, rl_params)
 from quantum_control_rl_server import dynamic_episode_driver_sim_env
 
 server_socket = rmt.Server()
-server_socket.bind((host_ip, port))
+(host, port) = (host_ip, host_port)
+server_socket.bind((host, port))
 server_socket.connect_client()
 
 env_kwargs = eval_env_kwargs = {

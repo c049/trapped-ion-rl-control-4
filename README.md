@@ -76,6 +76,15 @@ Trapped-ion example (`examples/trapped_ion_cat/`):
 - `parse_trapped_ion_cat_data.py`: parses `.h5` logs and `eval_fidelity.csv`, then generates training/eval plots.
 - `plot_trapped_ion_cat_pulses.py`: reads final policy parameters from `.h5` and plots pulse sequences.
 
+Trapped-ion binomial example (`examples/trapped_ion_binomial/`):
+- `trapped_ion_binomial_training_server.py`: PPO training server.
+- `trapped_ion_binomial_client.py`: remote simulation client and final refinement for binomial targets.
+- `trapped_ion_binomial_sim_function.py`: trapped-ion simulator and binomial target/characteristic utilities.
+- `run_with_logs.sh`: one-command launcher for server + client + plotting.
+
+Trapped-ion GKP example (`examples/trapped_ion_gkp/`):
+- `README.md`: full run guide and recommended GKP profile.
+
 Data/artifacts:
 - `examples/trapped_ion_cat/*.h5`: training logs written by the server.
 - `examples/trapped_ion_cat/eval_fidelity.csv`: evaluation fidelity history written by the client.

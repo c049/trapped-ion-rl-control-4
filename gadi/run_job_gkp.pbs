@@ -5,8 +5,8 @@
 #PBS -l ncpus=12
 #PBS -l ngpus=1
 #PBS -l mem=32GB
-#PBS -l walltime=02:00:00
-#PBS -l jobfs=50GB
+#PBS -l walltime=03:00:00
+#PBS -l jobfs=1GB
 #PBS -j oe
 #PBS -o /scratch/mu61/yl8164/quantum_control_rl_server/logs/qcrl_gkp_pbs.log
 
@@ -41,6 +41,15 @@ export PYTHONUNBUFFERED=1
 export MPLCONFIGDIR=/tmp/mpl
 mkdir -p "${MPLCONFIGDIR}"
 export H5LOG_FILENAME="${H5LOG_FILENAME:-$(date +%Y%m%d)_${PBS_JOBID}.gadi-pbs.h5}"
+export QCRL_HOST="${QCRL_HOST:-127.0.0.1}"
+if [[ -z "${QCRL_PORT:-}" ]]; then
+  _port_seed="${PBS_JOBID%%.*}"
+  if [[ "${_port_seed}" =~ ^[0-9]+$ ]]; then
+    export QCRL_PORT="$(( 5500 + (_port_seed % 1000) ))"
+  else
+    export QCRL_PORT=5555
+  fi
+fi
 
 export DQ_FORCE_GPU=1
 export JAX_PLATFORM_NAME=gpu
@@ -66,11 +75,20 @@ export CHAR_UNIFORM_MIX=0.20
 # Paper-aligned importance sampling for characteristic estimator:
 # use |chi_target|^2 as the base sampling density.
 export CHAR_IMPORTANCE_POWER="${CHAR_IMPORTANCE_POWER:-2.0}"
-export CHAR_REWARD_OBJECTIVE=overlap_real
-# Keep training reward consistent by default; stage switching can be re-enabled
-# via env overrides for dedicated ablation runs.
-export CHAR_REWARD_OBJECTIVE_STAGE2=overlap_real
-export CHAR_REWARD_SWITCH_EPOCH=-1
+export CHAR_REWARD_OBJECTIVE="${CHAR_REWARD_OBJECTIVE:-overlap_real}"
+# Default to a guarded stage-2 objective transition.
+export CHAR_REWARD_OBJECTIVE_STAGE2="${CHAR_REWARD_OBJECTIVE_STAGE2:-nmse_exp}"
+export CHAR_REWARD_SWITCH_EPOCH="${CHAR_REWARD_SWITCH_EPOCH:-350}"
+export CHAR_REWARD_SWITCH_AUTO_CLAMP="${CHAR_REWARD_SWITCH_AUTO_CLAMP:-1}"
+export CHAR_REWARD_SWITCH_AUTO_FRACTION="${CHAR_REWARD_SWITCH_AUTO_FRACTION:-0.60}"
+export CHAR_REWARD_SWITCH_MIN_BEST_EVAL="${CHAR_REWARD_SWITCH_MIN_BEST_EVAL:-0.982}"
+export CHAR_REWARD_SWITCH_FORCE_AFTER_EVAL_PATIENCE="${CHAR_REWARD_SWITCH_FORCE_AFTER_EVAL_PATIENCE:-18}"
+export CHAR_REWARD_STAGE2_PATIENCE_EVAL="${CHAR_REWARD_STAGE2_PATIENCE_EVAL:-12}"
+export CHAR_REWARD_STAGE2_MIN_GAIN="${CHAR_REWARD_STAGE2_MIN_GAIN:-0.0015}"
+export CHAR_REWARD_STAGE2_ALLOW_REVERT="${CHAR_REWARD_STAGE2_ALLOW_REVERT:-1}"
+# Keep default reward normalization behavior used by the best 0.982 run.
+# (Can be set to 1 for dedicated ablation runs.)
+export CHAR_USE_FIXED_REWARD_NORM="${CHAR_USE_FIXED_REWARD_NORM:-0}"
 
 # Lattice/stabilizer anchors are important for GKP.
 export GKP_LATTICE_MIX="${GKP_LATTICE_MIX:-0.35}"
@@ -83,11 +101,15 @@ export GKP_LATTICE_ORDER="${GKP_LATTICE_ORDER:-3}"
 export TRAIN_STAGE1_EPOCHS=0
 export TRAIN_STAGE2_EPOCHS=180
 export TRAIN_POINTS_STAGE3=1400
-# Keep the stable pulse resolution used by previous >=0.97 runs.
-export N_STEPS=120
-export N_SEGMENTS=60
+# Keep the stable pulse resolution used by previous >=0.97 runs by default.
+# Allow overrides for high-resolution fine-tuning experiments.
+export N_STEPS="${N_STEPS:-120}"
+export N_SEGMENTS="${N_SEGMENTS:-60}"
+# Keep physical pulse duration fixed when changing N_STEPS.
+export TOTAL_DURATION="${TOTAL_DURATION:-1200.0}"
 
 export PHASE_CLIP=3.141592653589793
+export USE_PERIODIC_PHASE_PROJECTION="${USE_PERIODIC_PHASE_PROJECTION:-1}"
 export AMP_MIN=0.0
 export AMP_MAX=2.0
 export AMP_ACTION_SCALE=0.35
@@ -102,9 +124,24 @@ export PPO_INIT_STD=0.12
 export PPO_NUM_POLICY_UPDATES=10
 export ACTOR_FC_LAYERS="${ACTOR_FC_LAYERS:-128,64,32}"
 export VALUE_FC_LAYERS="${VALUE_FC_LAYERS:-}"
-export RANDOM_SEED="${RANDOM_SEED:-0}"
+# Seed policy:
+# - if RANDOM_SEED is explicitly provided, respect it.
+# - otherwise derive a per-job seed from PBS_JOBID to avoid repeating the
+#   exact same stochastic path every run.
+if [[ -z "${RANDOM_SEED:-}" ]]; then
+  _job_seed="${PBS_JOBID%%.*}"
+  if [[ "${_job_seed}" =~ ^[0-9]+$ ]]; then
+    export RANDOM_SEED="$(( _job_seed % 2147483647 ))"
+  else
+    export RANDOM_SEED=0
+  fi
+else
+  export RANDOM_SEED
+fi
 export NUM_EPOCHS="${NUM_EPOCHS:-3200}"
 export EVAL_INTERVAL=10
+export INIT_PULSES_NPZ="${INIT_PULSES_NPZ:-}"
+export INIT_PULSE_BLEND="${INIT_PULSE_BLEND:-}"
 export TRAIN_FID_SCREEN_ENABLE="${TRAIN_FID_SCREEN_ENABLE:-1}"
 export TRAIN_FID_SCREEN_START_EPOCH="${TRAIN_FID_SCREEN_START_EPOCH:-1400}"
 export TRAIN_FID_SCREEN_INTERVAL="${TRAIN_FID_SCREEN_INTERVAL:-5}"
@@ -115,7 +152,12 @@ export FINAL_REFINE_SAMPLES=3072
 export FINAL_REFINE_ROUNDS=10
 export FINAL_REFINE_TOPK=64
 export FINAL_REFINE_TOP_EVAL_CENTERS=6
-export FINAL_REFINE_SEED="${FINAL_REFINE_SEED:-1234}"
+# Keep final-search randomness tied to RANDOM_SEED unless explicitly set.
+if [[ -z "${FINAL_REFINE_SEED:-}" ]]; then
+  export FINAL_REFINE_SEED="$(( (RANDOM_SEED * 1000003 + 1234) % 2147483647 ))"
+else
+  export FINAL_REFINE_SEED
+fi
 export FINAL_REFINE_SCALE=0.9
 export FINAL_REFINE_DECAY=0.6
 export FINAL_REFINE_MIN_SIGMA=0.01
@@ -126,23 +168,42 @@ export FINAL_REFINE_AMP_START_ROUND=4
 export FINAL_REFINE_USE_LOC_CENTER=1
 export FINAL_REFINE_USE_TRAIN_CENTER=1
 export FINAL_REFINE_USE_TRAIN_FID_CENTER=1
+export FINAL_REFINE_USE_WARMSTART_CENTER="${FINAL_REFINE_USE_WARMSTART_CENTER:-1}"
+export FINAL_REFINE_USE_CHECKPOINT_CENTER="${FINAL_REFINE_USE_CHECKPOINT_CENTER:-1}"
+export FINAL_REFINE_CHECKPOINT_PULSES="${FINAL_REFINE_CHECKPOINT_PULSES:-${PROJECT_DIR}/examples/trapped_ion_gkp/checkpoint/final_pulses_best.npz}"
+export FINAL_REFINE_CHECKPOINT_BLEND="${FINAL_REFINE_CHECKPOINT_BLEND:-1.0}"
 export FINAL_REFINE_SEG_UPDATE_MODE=best
 export FINAL_REFINE_SEG_ELITE_FRACTION="${FINAL_REFINE_SEG_ELITE_FRACTION:-0.25}"
 export FINAL_REFINE_FULL_STEPS=1
 export FINAL_REFINE_FULL_SAMPLES=3072
 export FINAL_REFINE_FULL_ROUNDS=8
 export FINAL_REFINE_FULL_TOPK=96
-export FINAL_REFINE_FULL_CANDIDATES=4
+export FINAL_REFINE_FULL_CANDIDATES="${FINAL_REFINE_FULL_CANDIDATES:-6}"
 export FINAL_REFINE_FULL_SCALE=0.7
 export FINAL_REFINE_FULL_DECAY=0.65
 export FINAL_REFINE_FULL_MIN_SIGMA=0.0025
 export FINAL_REFINE_FULL_SIGMA_FACTOR=0.6
+export FINAL_REFINE_FULL_ENABLE_AMP="${FINAL_REFINE_FULL_ENABLE_AMP:-1}"
+export FINAL_REFINE_FULL_MIN_SIGMA_AMP="${FINAL_REFINE_FULL_MIN_SIGMA_AMP:-0.0015}"
+export FINAL_REFINE_FULL_SIGMA_FACTOR_AMP="${FINAL_REFINE_FULL_SIGMA_FACTOR_AMP:-0.6}"
+export FINAL_REFINE_DIVERSE_CENTERS="${FINAL_REFINE_DIVERSE_CENTERS:-1}"
+export FINAL_REFINE_DIVERSITY_PHASE_RMS="${FINAL_REFINE_DIVERSITY_PHASE_RMS:-0.08}"
+export FINAL_REFINE_DIVERSITY_AMP_RMS="${FINAL_REFINE_DIVERSITY_AMP_RMS:-0.008}"
 export FINAL_REFINE_FULL_UPDATE_MODE=best
 export FINAL_REFINE_FULL_ELITE_FRACTION="${FINAL_REFINE_FULL_ELITE_FRACTION:-0.15}"
 export FINAL_REFINE_ELITE_WEIGHT_POWER="${FINAL_REFINE_ELITE_WEIGHT_POWER:-2.0}"
 export FINAL_POLISH_ENABLE=1
 export FINAL_POLISH_ITERS=420
-export FINAL_POLISH_TOP_CANDIDATES=1
+# Use multi-center scout + continuation by default to reduce local-basin lock-in.
+export FINAL_POLISH_TOP_CANDIDATES="${FINAL_POLISH_TOP_CANDIDATES:-2}"
+export FINAL_POLISH_SCOUT_ITERS="${FINAL_POLISH_SCOUT_ITERS:-240}"
+export FINAL_POLISH_SCOUT_PATIENCE="${FINAL_POLISH_SCOUT_PATIENCE:-70}"
+export FINAL_POLISH_FINAL_ITERS="${FINAL_POLISH_FINAL_ITERS:-420}"
+export FINAL_POLISH_FINAL_TOP_CENTERS="${FINAL_POLISH_FINAL_TOP_CENTERS:-1}"
+export FINAL_POLISH_FINAL_RESTARTS="${FINAL_POLISH_FINAL_RESTARTS:-1}"
+export FINAL_POLISH_RESTART_PHASE_JITTER="${FINAL_POLISH_RESTART_PHASE_JITTER:-0.0}"
+export FINAL_POLISH_RESTART_AMP_JITTER="${FINAL_POLISH_RESTART_AMP_JITTER:-0.0}"
+export FINAL_POLISH_RESTART_DECAY="${FINAL_POLISH_RESTART_DECAY:-0.7}"
 export FINAL_POLISH_INCLUDE_AMP=1
 export FINAL_POLISH_PHASE_A0=0.02
 export FINAL_POLISH_PHASE_C0=0.008
@@ -152,6 +213,244 @@ export FINAL_POLISH_ALPHA=0.602
 export FINAL_POLISH_GAMMA=0.101
 export FINAL_POLISH_PATIENCE=160
 export FINAL_POLISH_LOG_INTERVAL=10
+export FINAL_POLISH_ACCEPT_MODE="${FINAL_POLISH_ACCEPT_MODE:-greedy}"
+export FINAL_POLISH_AUTO_EXTEND="${FINAL_POLISH_AUTO_EXTEND:-1}"
+export FINAL_POLISH_EXTEND_BLOCK="${FINAL_POLISH_EXTEND_BLOCK:-240}"
+export FINAL_POLISH_MAX_ITERS="${FINAL_POLISH_MAX_ITERS:-2400}"
+export FINAL_POLISH_EXTEND_MIN_GAIN="${FINAL_POLISH_EXTEND_MIN_GAIN:-2.0e-5}"
+export FINAL_COORD_POLISH_ENABLE="${FINAL_COORD_POLISH_ENABLE:-1}"
+export FINAL_COORD_POLISH_INCLUDE_AMP="${FINAL_COORD_POLISH_INCLUDE_AMP:-1}"
+export FINAL_COORD_POLISH_SWEEPS="${FINAL_COORD_POLISH_SWEEPS:-2}"
+export FINAL_COORD_POLISH_MAX_MOVES="${FINAL_COORD_POLISH_MAX_MOVES:-20}"
+export FINAL_COORD_POLISH_BATCH_SIZE="${FINAL_COORD_POLISH_BATCH_SIZE:-192}"
+export FINAL_COORD_POLISH_TOP_CANDIDATES="${FINAL_COORD_POLISH_TOP_CANDIDATES:-1}"
+export FINAL_COORD_POLISH_PHASE_STEP="${FINAL_COORD_POLISH_PHASE_STEP:-0.006}"
+export FINAL_COORD_POLISH_PHASE_DECAY="${FINAL_COORD_POLISH_PHASE_DECAY:-0.6}"
+export FINAL_COORD_POLISH_PHASE_MIN_STEP="${FINAL_COORD_POLISH_PHASE_MIN_STEP:-4.0e-4}"
+export FINAL_COORD_POLISH_AMP_STEP="${FINAL_COORD_POLISH_AMP_STEP:-0.0015}"
+export FINAL_COORD_POLISH_AMP_DECAY="${FINAL_COORD_POLISH_AMP_DECAY:-0.6}"
+export FINAL_COORD_POLISH_AMP_MIN_STEP="${FINAL_COORD_POLISH_AMP_MIN_STEP:-2.0e-4}"
+export FINAL_COORD_POLISH_MIN_GAIN="${FINAL_COORD_POLISH_MIN_GAIN:-1.0e-6}"
+export FINAL_COORD_POLISH_EMPTY_SWEEP_PATIENCE="${FINAL_COORD_POLISH_EMPTY_SWEEP_PATIENCE:-2}"
+# Post-RL budget guard (seconds): prevents long final-stage continuation from
+# hitting PBS walltime and being killed before writing outputs.
+export POST_RL_BUDGET_SEC="${POST_RL_BUDGET_SEC:-6600}"
+export POST_RL_STOP_BUFFER_SEC="${POST_RL_STOP_BUFFER_SEC:-180}"
+export POST_RL_MIN_STAGE_SEC="${POST_RL_MIN_STAGE_SEC:-150}"
+
+# Default to warm-start fine-tune mode for max-fidelity runs.
+# Set FINE_TUNE_FROM_BEST=0 explicitly for from-scratch training.
+export FINE_TUNE_FROM_BEST="${FINE_TUNE_FROM_BEST:-1}"
+
+# Optional fine-tune mode:
+# Start from an existing pulse and narrow exploration to push beyond the
+# previous best around 0.98.
+if [[ "${FINE_TUNE_FROM_BEST}" == "1" ]]; then
+  # INIT_PULSES_NPZ is resolved later, after final N_STEPS/N_SEGMENTS are known.
+  if [[ -z "${INIT_PULSE_BLEND:-}" ]]; then
+    export INIT_PULSE_BLEND="${FINE_TUNE_INIT_PULSE_BLEND:-0.995}"
+  fi
+  # For near-optimum refinement, use a shorter but tighter RL phase.
+  export NUM_EPOCHS="${FINE_TUNE_EPOCHS:-900}"
+  export PPO_LR="${FINE_TUNE_PPO_LR:-8.0e-5}"
+  export PPO_ENTROPY_REG="${FINE_TUNE_ENTROPY_REG:-1.0e-5}"
+  export PPO_INIT_STD="${FINE_TUNE_INIT_STD:-0.035}"
+  export PHASE_ACTION_SCALE="${FINE_TUNE_PHASE_ACTION_SCALE:-0.45}"
+  export AMP_ACTION_SCALE="${FINE_TUNE_AMP_ACTION_SCALE:-0.12}"
+  export TRAIN_FID_SCREEN_START_EPOCH="${FINE_TUNE_SCREEN_START_EPOCH:-180}"
+  export CHAR_REWARD_SWITCH_EPOCH="${FINE_TUNE_REWARD_SWITCH_EPOCH:-360}"
+  export CHAR_REWARD_SWITCH_MIN_BEST_EVAL="${FINE_TUNE_REWARD_SWITCH_MIN_BEST_EVAL:-0.9874}"
+  export CHAR_REWARD_SWITCH_FORCE_AFTER_EVAL_PATIENCE="${FINE_TUNE_REWARD_SWITCH_FORCE_PATIENCE:-14}"
+  export CHAR_REWARD_STAGE2_PATIENCE_EVAL="${FINE_TUNE_REWARD_STAGE2_PATIENCE_EVAL:-12}"
+  export CHAR_REWARD_STAGE2_MIN_GAIN="${FINE_TUNE_REWARD_STAGE2_MIN_GAIN:-0.0005}"
+
+  # Fine-tuning should target the final delta directly by default.
+  # The long coarse-to-fine curriculum is useful for training from scratch,
+  # but it can pull a warm-started near-optimal pulse away from the objective.
+  export GKP_DELTA_CURRICULUM="${FINE_TUNE_DELTA_CURRICULUM:-${GKP_DELTA}}"
+  export GKP_DELTA_CURRICULUM_EPOCHS="${FINE_TUNE_DELTA_CURRICULUM_EPOCHS:-}"
+
+  # Default to step-level controls in fine-tune mode to avoid segment
+  # averaging loss and unlock extra pulse expressivity.
+  if [[ "${FINE_TUNE_FULL_RES:-1}" == "1" ]]; then
+    export N_SEGMENTS="${FINE_TUNE_N_SEGMENTS:-${N_STEPS}}"
+  else
+    export N_SEGMENTS="${FINE_TUNE_N_SEGMENTS:-${N_SEGMENTS}}"
+  fi
+
+  # Rebalance local-search budget for tighter neighborhoods.
+  export FINAL_REFINE_SAMPLES="${FINE_TUNE_REFINE_SAMPLES:-2048}"
+  export FINAL_REFINE_ROUNDS="${FINE_TUNE_REFINE_ROUNDS:-8}"
+  export FINAL_REFINE_FULL_SAMPLES="${FINE_TUNE_FULL_SAMPLES:-2048}"
+  export FINAL_REFINE_FULL_ROUNDS="${FINE_TUNE_FULL_ROUNDS:-8}"
+  export FINAL_REFINE_FULL_TOPK="${FINE_TUNE_FULL_TOPK:-80}"
+  export FINAL_REFINE_FULL_CANDIDATES="${FINE_TUNE_FULL_CANDIDATES:-8}"
+  export FINAL_REFINE_FULL_ENABLE_AMP="${FINE_TUNE_FULL_ENABLE_AMP:-1}"
+  export FINAL_REFINE_FULL_MIN_SIGMA_AMP="${FINE_TUNE_FULL_MIN_SIGMA_AMP:-0.0015}"
+  export FINAL_REFINE_FULL_SIGMA_FACTOR_AMP="${FINE_TUNE_FULL_SIGMA_FACTOR_AMP:-0.6}"
+  export FINAL_REFINE_DIVERSE_CENTERS="${FINE_TUNE_DIVERSE_CENTERS:-1}"
+  export FINAL_REFINE_DIVERSITY_PHASE_RMS="${FINE_TUNE_DIVERSITY_PHASE_RMS:-0.10}"
+  export FINAL_REFINE_DIVERSITY_AMP_RMS="${FINE_TUNE_DIVERSITY_AMP_RMS:-0.010}"
+
+  export FINAL_POLISH_ITERS="${FINE_TUNE_FINAL_POLISH_ITERS:-1400}"
+  export FINAL_POLISH_PATIENCE="${FINE_TUNE_FINAL_POLISH_PATIENCE:-260}"
+  export FINAL_POLISH_PHASE_A0="${FINE_TUNE_FINAL_PHASE_A0:-0.015}"
+  export FINAL_POLISH_PHASE_C0="${FINE_TUNE_FINAL_PHASE_C0:-0.006}"
+  export FINAL_POLISH_AMP_A0="${FINE_TUNE_FINAL_AMP_A0:-0.0025}"
+  export FINAL_POLISH_AMP_C0="${FINE_TUNE_FINAL_AMP_C0:-0.0012}"
+  export FINAL_POLISH_TOP_CANDIDATES="${FINE_TUNE_TOP_CANDIDATES:-5}"
+  export FINAL_POLISH_SCOUT_ITERS="${FINE_TUNE_SCOUT_ITERS:-320}"
+  export FINAL_POLISH_FINAL_ITERS="${FINE_TUNE_FINAL_ITERS:-1200}"
+  export FINAL_POLISH_FINAL_TOP_CENTERS="${FINE_TUNE_FINAL_TOP_CENTERS:-3}"
+  export FINAL_POLISH_FINAL_RESTARTS="${FINE_TUNE_FINAL_RESTARTS:-2}"
+  export FINAL_POLISH_RESTART_PHASE_JITTER="${FINE_TUNE_RESTART_PHASE_JITTER:-0.012}"
+  export FINAL_POLISH_RESTART_AMP_JITTER="${FINE_TUNE_RESTART_AMP_JITTER:-0.0020}"
+  export FINAL_POLISH_RESTART_DECAY="${FINE_TUNE_RESTART_DECAY:-0.65}"
+  export FINAL_POLISH_ACCEPT_MODE="${FINE_TUNE_ACCEPT_MODE:-spsa}"
+  export FINAL_POLISH_AUTO_EXTEND="${FINE_TUNE_AUTO_EXTEND:-1}"
+  export FINAL_POLISH_EXTEND_BLOCK="${FINE_TUNE_EXTEND_BLOCK:-300}"
+  export FINAL_POLISH_MAX_ITERS="${FINE_TUNE_MAX_ITERS:-5000}"
+  export FINAL_POLISH_EXTEND_MIN_GAIN="${FINE_TUNE_EXTEND_MIN_GAIN:-2.0e-5}"
+  export FINAL_COORD_POLISH_ENABLE="${FINE_TUNE_COORD_ENABLE:-1}"
+  export FINAL_COORD_POLISH_INCLUDE_AMP="${FINE_TUNE_COORD_INCLUDE_AMP:-1}"
+  export FINAL_COORD_POLISH_SWEEPS="${FINE_TUNE_COORD_SWEEPS:-6}"
+  export FINAL_COORD_POLISH_MAX_MOVES="${FINE_TUNE_COORD_MAX_MOVES:-64}"
+  export FINAL_COORD_POLISH_BATCH_SIZE="${FINE_TUNE_COORD_BATCH_SIZE:-192}"
+  export FINAL_COORD_POLISH_TOP_CANDIDATES="${FINE_TUNE_COORD_TOP_CANDIDATES:-2}"
+  export FINAL_COORD_POLISH_PHASE_STEP="${FINE_TUNE_COORD_PHASE_STEP:-0.006}"
+  export FINAL_COORD_POLISH_PHASE_DECAY="${FINE_TUNE_COORD_PHASE_DECAY:-0.6}"
+  export FINAL_COORD_POLISH_PHASE_MIN_STEP="${FINE_TUNE_COORD_PHASE_MIN_STEP:-2.5e-4}"
+  export FINAL_COORD_POLISH_AMP_STEP="${FINE_TUNE_COORD_AMP_STEP:-0.0016}"
+  export FINAL_COORD_POLISH_AMP_DECAY="${FINE_TUNE_COORD_AMP_DECAY:-0.6}"
+  export FINAL_COORD_POLISH_AMP_MIN_STEP="${FINE_TUNE_COORD_AMP_MIN_STEP:-1.5e-4}"
+  export FINAL_COORD_POLISH_MIN_GAIN="${FINE_TUNE_COORD_MIN_GAIN:-2.0e-7}"
+  export FINAL_COORD_POLISH_EMPTY_SWEEP_PATIENCE="${FINE_TUNE_COORD_EMPTY_SWEEP_PATIENCE:-4}"
+  export FINAL_COORD_POLISH_RESERVE_SEC="${FINE_TUNE_COORD_RESERVE_SEC:-600}"
+  export CHAR_USE_FIXED_REWARD_NORM="${FINE_TUNE_FIXED_REWARD_NORM:-0}"
+  export POST_RL_BUDGET_SEC="${FINE_TUNE_POST_RL_BUDGET_SEC:-${POST_RL_BUDGET_SEC}}"
+  export POST_RL_STOP_BUFFER_SEC="${FINE_TUNE_POST_RL_STOP_BUFFER_SEC:-${POST_RL_STOP_BUFFER_SEC}}"
+  export POST_RL_MIN_STAGE_SEC="${FINE_TUNE_POST_RL_MIN_STAGE_SEC:-${POST_RL_MIN_STAGE_SEC}}"
+
+  # Optional high-resolution polish mode:
+  # keeps warm-start but increases control expressivity (depth + amplitude learning)
+  # to escape the observed ~0.986 local basin.
+  if [[ "${FINE_TUNE_HIGH_RES:-0}" == "1" ]]; then
+    export N_STEPS="${FINE_TUNE_HI_N_STEPS:-240}"
+    export TOTAL_DURATION="${FINE_TUNE_HI_TOTAL_DURATION:-${TOTAL_DURATION}}"
+    if [[ "${FINE_TUNE_HI_FULL_RES:-1}" == "1" ]]; then
+      export N_SEGMENTS="${FINE_TUNE_HI_N_SEGMENTS:-${N_STEPS}}"
+    else
+      export N_SEGMENTS="${FINE_TUNE_HI_N_SEGMENTS:-${N_SEGMENTS}}"
+    fi
+    export NUM_EPOCHS="${FINE_TUNE_HI_EPOCHS:-350}"
+    export CHAR_REWARD_SWITCH_EPOCH="${FINE_TUNE_HI_REWARD_SWITCH_EPOCH:-140}"
+    export PPO_LR="${FINE_TUNE_HI_PPO_LR:-5.0e-5}"
+    export PPO_ENTROPY_REG="${FINE_TUNE_HI_ENTROPY_REG:-5.0e-6}"
+    export PPO_INIT_STD="${FINE_TUNE_HI_INIT_STD:-0.020}"
+    export PHASE_ACTION_SCALE="${FINE_TUNE_HI_PHASE_ACTION_SCALE:-0.30}"
+    export AMP_ACTION_SCALE="${FINE_TUNE_HI_AMP_ACTION_SCALE:-0.06}"
+    export LEARN_AMP_R="${FINE_TUNE_HI_LEARN_AMP_R:-1}"
+    export LEARN_AMP_B="${FINE_TUNE_HI_LEARN_AMP_B:-1}"
+    export TRAIN_FID_SCREEN_START_EPOCH="${FINE_TUNE_HI_SCREEN_START_EPOCH:-80}"
+
+    export FINAL_REFINE_FULL_SAMPLES="${FINE_TUNE_HI_FULL_SAMPLES:-3072}"
+    export FINAL_REFINE_FULL_TOPK="${FINE_TUNE_HI_FULL_TOPK:-96}"
+    export FINAL_POLISH_TOP_CANDIDATES="${FINE_TUNE_HI_TOP_CANDIDATES:-6}"
+    export FINAL_POLISH_FINAL_TOP_CENTERS="${FINE_TUNE_HI_FINAL_TOP_CENTERS:-3}"
+    export FINAL_POLISH_FINAL_RESTARTS="${FINE_TUNE_HI_FINAL_RESTARTS:-2}"
+    export FINAL_POLISH_RESTART_PHASE_JITTER="${FINE_TUNE_HI_RESTART_PHASE_JITTER:-0.012}"
+    export FINAL_POLISH_RESTART_AMP_JITTER="${FINE_TUNE_HI_RESTART_AMP_JITTER:-0.0020}"
+    export FINAL_POLISH_RESTART_DECAY="${FINE_TUNE_HI_RESTART_DECAY:-0.70}"
+    export FINAL_POLISH_ACCEPT_MODE="${FINE_TUNE_HI_ACCEPT_MODE:-spsa}"
+    export FINAL_COORD_POLISH_RESERVE_SEC="${FINE_TUNE_HI_COORD_RESERVE_SEC:-720}"
+    export POST_RL_BUDGET_SEC="${FINE_TUNE_HI_POST_RL_BUDGET_SEC:-5400}"
+  fi
+fi
+
+_gkp_examples_dir="${PROJECT_DIR}/examples/trapped_ion_gkp"
+_td_tag="${TOTAL_DURATION//./p}"
+GKP_CKPT_RES_TAG="ns${N_STEPS}_ng${N_SEGMENTS}_td${_td_tag}"
+GKP_CKPT_RES_PULSE="${_gkp_examples_dir}/checkpoint/final_pulses_best_${GKP_CKPT_RES_TAG}.npz"
+GKP_CKPT_RES_FID="${_gkp_examples_dir}/checkpoint/final_fidelity_best_${GKP_CKPT_RES_TAG}.txt"
+
+if [[ "${FINE_TUNE_FROM_BEST}" == "1" && -z "${INIT_PULSES_NPZ:-}" ]]; then
+  if [[ -f "${GKP_CKPT_RES_PULSE}" ]]; then
+    export INIT_PULSES_NPZ="${GKP_CKPT_RES_PULSE}"
+  elif [[ -f "${_gkp_examples_dir}/checkpoint/final_pulses_best.npz" ]]; then
+    export INIT_PULSES_NPZ="${_gkp_examples_dir}/checkpoint/final_pulses_best.npz"
+  else
+    export INIT_PULSES_NPZ="${_gkp_examples_dir}/outputs/final_pulses.npz"
+  fi
+fi
+
+if [[ -z "${FINAL_REFINE_CHECKPOINT_PULSES:-}" || "${FINAL_REFINE_CHECKPOINT_PULSES}" == "${PROJECT_DIR}/examples/trapped_ion_gkp/checkpoint/final_pulses_best.npz" ]]; then
+  if [[ -f "${GKP_CKPT_RES_PULSE}" ]]; then
+    export FINAL_REFINE_CHECKPOINT_PULSES="${GKP_CKPT_RES_PULSE}"
+  else
+    export FINAL_REFINE_CHECKPOINT_PULSES="${PROJECT_DIR}/examples/trapped_ion_gkp/checkpoint/final_pulses_best.npz"
+  fi
+fi
+
+resolve_gkp_pulse_npz() {
+  local raw="$1"
+  local requested="" base="" candidate=""
+  if [[ -z "${raw}" ]]; then
+    return 1
+  fi
+
+  if [[ "${raw}" = /* ]]; then
+    requested="${raw}"
+  else
+    requested="${_gkp_examples_dir}/${raw}"
+  fi
+  if [[ -f "${requested}" ]]; then
+    printf '%s\n' "${requested}"
+    return 0
+  fi
+
+  base="$(basename "${raw}")"
+  for candidate in \
+    "${_gkp_examples_dir}/checkpoint/${base}" \
+    "${_gkp_examples_dir}/outputs/${base}" \
+    "${_gkp_examples_dir}/checkpoint/final_pulses_best.npz" \
+    "${_gkp_examples_dir}/outputs/final_pulses.npz"
+  do
+    if [[ -f "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [[ -n "${INIT_PULSES_NPZ:-}" ]]; then
+  if _resolved_init_npz="$(resolve_gkp_pulse_npz "${INIT_PULSES_NPZ}")"; then
+    if [[ "${_resolved_init_npz}" != "${INIT_PULSES_NPZ}" ]]; then
+      echo "WARN: INIT_PULSES_NPZ fallback: requested=${INIT_PULSES_NPZ} using=${_resolved_init_npz}" >> "${LOG_DIR}/qcrl_gkp_pbs.log"
+    fi
+    export INIT_PULSES_NPZ="${_resolved_init_npz}"
+  else
+    echo "WARN: INIT_PULSES_NPZ not found (${INIT_PULSES_NPZ}); warm-start disabled for this run." >> "${LOG_DIR}/qcrl_gkp_pbs.log"
+    export INIT_PULSES_NPZ=""
+  fi
+fi
+
+if [[ -n "${FINAL_REFINE_CHECKPOINT_PULSES:-}" ]]; then
+  if _resolved_ckpt_npz="$(resolve_gkp_pulse_npz "${FINAL_REFINE_CHECKPOINT_PULSES}")"; then
+    if [[ "${_resolved_ckpt_npz}" != "${FINAL_REFINE_CHECKPOINT_PULSES}" ]]; then
+      echo "WARN: FINAL_REFINE_CHECKPOINT_PULSES fallback: requested=${FINAL_REFINE_CHECKPOINT_PULSES} using=${_resolved_ckpt_npz}" >> "${LOG_DIR}/qcrl_gkp_pbs.log"
+    fi
+    export FINAL_REFINE_CHECKPOINT_PULSES="${_resolved_ckpt_npz}"
+  else
+    echo "WARN: FINAL_REFINE_CHECKPOINT_PULSES not found (${FINAL_REFINE_CHECKPOINT_PULSES}); disabling checkpoint center." >> "${LOG_DIR}/qcrl_gkp_pbs.log"
+    export FINAL_REFINE_CHECKPOINT_PULSES=""
+    export FINAL_REFINE_USE_CHECKPOINT_CENTER=0
+  fi
+fi
+
+if [[ -n "${INIT_PULSES_NPZ:-}" && -z "${INIT_PULSE_BLEND:-}" ]]; then
+  export INIT_PULSE_BLEND=1.0
+fi
 
 cd "${PROJECT_DIR}/examples/trapped_ion_gkp"
 
@@ -162,7 +461,7 @@ cd "${PROJECT_DIR}/examples/trapped_ion_gkp"
 SERVER_PID=$!
 
 SERVER_STARTUP_WAIT="${SERVER_STARTUP_WAIT:-600}"
-PORT=5555
+PORT="${QCRL_PORT}"
 echo "Waiting for GKP server to open port ${PORT} (timeout ${SERVER_STARTUP_WAIT}s)..." >> "${LOG_DIR}/qcrl_gkp_pbs.log"
 READY=0
 for _ in $(seq 1 "${SERVER_STARTUP_WAIT}"); do
@@ -202,9 +501,110 @@ PY
 )
   export LD_LIBRARY_PATH="${NVIDIA_LIBS}:${LD_LIBRARY_PATH}"
   echo "LD_LIBRARY_PATH for JAX: ${LD_LIBRARY_PATH}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: RANDOM_SEED=${RANDOM_SEED} FINAL_REFINE_SEED=${FINAL_REFINE_SEED} FINE_TUNE_FROM_BEST=${FINE_TUNE_FROM_BEST:-0}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: INIT_PULSES_NPZ=${INIT_PULSES_NPZ} INIT_PULSE_BLEND=${INIT_PULSE_BLEND}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: GKP_CKPT_RES_TAG=${GKP_CKPT_RES_TAG} RES_CKPT_PULSE=${GKP_CKPT_RES_PULSE}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: GKP_DELTA=${GKP_DELTA} CURRICULUM=${GKP_DELTA_CURRICULUM} CURRICULUM_EPOCHS=${GKP_DELTA_CURRICULUM_EPOCHS}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: CHAR_REWARD_OBJECTIVE=${CHAR_REWARD_OBJECTIVE} STAGE2=${CHAR_REWARD_OBJECTIVE_STAGE2} SWITCH_EPOCH=${CHAR_REWARD_SWITCH_EPOCH} SWITCH_AUTO_CLAMP=${CHAR_REWARD_SWITCH_AUTO_CLAMP} SWITCH_AUTO_FRACTION=${CHAR_REWARD_SWITCH_AUTO_FRACTION} MIN_BEST_EVAL=${CHAR_REWARD_SWITCH_MIN_BEST_EVAL} FORCE_AFTER_EVAL=${CHAR_REWARD_SWITCH_FORCE_AFTER_EVAL_PATIENCE} STAGE2_PATIENCE=${CHAR_REWARD_STAGE2_PATIENCE_EVAL} STAGE2_MIN_GAIN=${CHAR_REWARD_STAGE2_MIN_GAIN} STAGE2_ALLOW_REVERT=${CHAR_REWARD_STAGE2_ALLOW_REVERT}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: QCRL_HOST=${QCRL_HOST} QCRL_PORT=${QCRL_PORT}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: N_STEPS=${N_STEPS} N_SEGMENTS=${N_SEGMENTS} TOTAL_DURATION=${TOTAL_DURATION} TRAIN_POINTS_STAGE3=${TRAIN_POINTS_STAGE3}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: PHASE_WRAP=${USE_PERIODIC_PHASE_PROJECTION} PHASE_CLIP=${PHASE_CLIP}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: NUM_EPOCHS=${NUM_EPOCHS} PPO_LR=${PPO_LR} PPO_ENTROPY_REG=${PPO_ENTROPY_REG} PPO_INIT_STD=${PPO_INIT_STD}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: LEARN_AMP_R=${LEARN_AMP_R} LEARN_AMP_B=${LEARN_AMP_B} PHASE_ACTION_SCALE=${PHASE_ACTION_SCALE} AMP_ACTION_SCALE=${AMP_ACTION_SCALE} FINE_TUNE_HIGH_RES=${FINE_TUNE_HIGH_RES:-0}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: FULL_REFINE_AMP=${FINAL_REFINE_FULL_ENABLE_AMP} FULL_MIN_SIGMA_AMP=${FINAL_REFINE_FULL_MIN_SIGMA_AMP} FULL_SIGMA_FACTOR_AMP=${FINAL_REFINE_FULL_SIGMA_FACTOR_AMP}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: EXTRA_CENTERS_WARMSTART=${FINAL_REFINE_USE_WARMSTART_CENTER} EXTRA_CENTERS_CHECKPOINT=${FINAL_REFINE_USE_CHECKPOINT_CENTER} CHECKPOINT_PULSES=${FINAL_REFINE_CHECKPOINT_PULSES} CHECKPOINT_BLEND=${FINAL_REFINE_CHECKPOINT_BLEND}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: FULL_CANDIDATES=${FINAL_REFINE_FULL_CANDIDATES} DIVERSE=${FINAL_REFINE_DIVERSE_CENTERS} DIVERSITY_PHASE=${FINAL_REFINE_DIVERSITY_PHASE_RMS} DIVERSITY_AMP=${FINAL_REFINE_DIVERSITY_AMP_RMS}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: FINAL_POLISH_ITERS=${FINAL_POLISH_ITERS} TOP_CANDIDATES=${FINAL_POLISH_TOP_CANDIDATES} SCOUT_ITERS=${FINAL_POLISH_SCOUT_ITERS} FINAL_ITERS=${FINAL_POLISH_FINAL_ITERS} ACCEPT_MODE=${FINAL_POLISH_ACCEPT_MODE}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: FINAL_PORTFOLIO_TOP=${FINAL_POLISH_FINAL_TOP_CENTERS} FINAL_RESTARTS=${FINAL_POLISH_FINAL_RESTARTS} RESTART_PHASE_JITTER=${FINAL_POLISH_RESTART_PHASE_JITTER} RESTART_AMP_JITTER=${FINAL_POLISH_RESTART_AMP_JITTER} RESTART_DECAY=${FINAL_POLISH_RESTART_DECAY}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: FINAL_POLISH_AUTO_EXTEND=${FINAL_POLISH_AUTO_EXTEND} EXTEND_BLOCK=${FINAL_POLISH_EXTEND_BLOCK} MAX_ITERS=${FINAL_POLISH_MAX_ITERS} MIN_GAIN=${FINAL_POLISH_EXTEND_MIN_GAIN}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: COORD_POLISH_ENABLE=${FINAL_COORD_POLISH_ENABLE} SWEEPS=${FINAL_COORD_POLISH_SWEEPS} MAX_MOVES=${FINAL_COORD_POLISH_MAX_MOVES} TOP_CANDIDATES=${FINAL_COORD_POLISH_TOP_CANDIDATES} PHASE_STEP=${FINAL_COORD_POLISH_PHASE_STEP} AMP_STEP=${FINAL_COORD_POLISH_AMP_STEP} MIN_GAIN=${FINAL_COORD_POLISH_MIN_GAIN} EMPTY_SWEEP_PATIENCE=${FINAL_COORD_POLISH_EMPTY_SWEEP_PATIENCE} RESERVE_SEC=${FINAL_COORD_POLISH_RESERVE_SEC}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
+  echo "Run config: POST_RL_BUDGET_SEC=${POST_RL_BUDGET_SEC} POST_RL_STOP_BUFFER_SEC=${POST_RL_STOP_BUFFER_SEC} POST_RL_MIN_STAGE_SEC=${POST_RL_MIN_STAGE_SEC}" >> "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log"
   python trapped_ion_gkp_client.py
 ) > "${LOG_DIR}/client_${PBS_JOBID}.gadi-pbs.gkp-pbs.log" 2>&1
 STATUS=$?
+
+# Persist the best-known pulse/fidelity snapshot to avoid losing high-water
+# marks after weaker runs.
+if [[ "${SAVE_BEST_PULSE_SNAPSHOT:-1}" == "1" ]]; then
+  CUR_FID_FILE="${PROJECT_DIR}/examples/trapped_ion_gkp/outputs/final_fidelity.txt"
+  CUR_PULSE_FILE="${PROJECT_DIR}/examples/trapped_ion_gkp/outputs/final_pulses.npz"
+  CKPT_DIR="${PROJECT_DIR}/examples/trapped_ion_gkp/checkpoint"
+  BEST_FID_FILE="${CKPT_DIR}/final_fidelity_best.txt"
+  BEST_PULSE_FILE="${CKPT_DIR}/final_pulses_best.npz"
+  BEST_FID_FILE_RES="${CKPT_DIR}/final_fidelity_best_${GKP_CKPT_RES_TAG}.txt"
+  BEST_PULSE_FILE_RES="${CKPT_DIR}/final_pulses_best_${GKP_CKPT_RES_TAG}.npz"
+  if [[ -f "${CUR_FID_FILE}" && -f "${CUR_PULSE_FILE}" ]]; then
+    mkdir -p "${CKPT_DIR}"
+    python3 - "${CUR_FID_FILE}" "${CUR_PULSE_FILE}" "${BEST_FID_FILE}" "${BEST_PULSE_FILE}" >> "${LOG_DIR}/qcrl_gkp_pbs.log" 2>&1 <<'PY'
+import os
+import shutil
+import sys
+
+cur_fid_path, cur_pulse_path, best_fid_path, best_pulse_path = sys.argv[1:]
+
+def _read_fid(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return float(f.read().strip())
+    except Exception:
+        return None
+
+cur_fid = _read_fid(cur_fid_path)
+best_fid = _read_fid(best_fid_path)
+
+if cur_fid is None:
+    print(f"[best-snapshot] skip: could not parse current fidelity from {cur_fid_path}")
+    raise SystemExit(0)
+
+if best_fid is None or cur_fid > best_fid + 1.0e-12:
+    shutil.copy2(cur_fid_path, best_fid_path)
+    shutil.copy2(cur_pulse_path, best_pulse_path)
+    print(
+        f"[best-snapshot] updated: best fidelity {cur_fid:.6f} "
+        f"(source pulse: {cur_pulse_path})"
+    )
+else:
+    print(
+        f"[best-snapshot] keep existing best {best_fid:.6f}; "
+        f"current run {cur_fid:.6f}"
+    )
+PY
+    python3 - "${CUR_FID_FILE}" "${CUR_PULSE_FILE}" "${BEST_FID_FILE_RES}" "${BEST_PULSE_FILE_RES}" >> "${LOG_DIR}/qcrl_gkp_pbs.log" 2>&1 <<'PY'
+import os
+import shutil
+import sys
+
+cur_fid_path, cur_pulse_path, best_fid_path, best_pulse_path = sys.argv[1:]
+
+def _read_fid(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return float(f.read().strip())
+    except Exception:
+        return None
+
+cur_fid = _read_fid(cur_fid_path)
+best_fid = _read_fid(best_fid_path)
+
+if cur_fid is None:
+    print(f"[best-snapshot-res] skip: could not parse current fidelity from {cur_fid_path}")
+    raise SystemExit(0)
+
+if best_fid is None or cur_fid > best_fid + 1.0e-12:
+    shutil.copy2(cur_fid_path, best_fid_path)
+    shutil.copy2(cur_pulse_path, best_pulse_path)
+    print(
+        f"[best-snapshot-res] updated: best fidelity {cur_fid:.6f} "
+        f"(source pulse: {cur_pulse_path}; target: {best_pulse_path})"
+    )
+else:
+    print(
+        f"[best-snapshot-res] keep existing best {best_fid:.6f}; "
+        f"current run {cur_fid:.6f}"
+    )
+PY
+  fi
+fi
 
 kill "${SERVER_PID}" || true
 wait "${SERVER_PID}" || true

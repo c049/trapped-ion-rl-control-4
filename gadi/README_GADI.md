@@ -1,7 +1,7 @@
 # Gadi run prep (PBS)
 
 This folder contains scripts to prepare environments and run the trapped-ion
-examples on Gadi (cat + GKP). It assumes you will run **server + client on the
+examples on Gadi (cat + GKP + binomial). It assumes you will run **server + client on the
 same GPU node** (localhost socket). Adjust modules/queue/project to your allocation.
 
 ## 1) Create environments on a login node
@@ -32,7 +32,8 @@ Notes:
 
 ## 2) Submit the job
 
-Edit `gadi/run_job.pbs` (cat) or `gadi/run_job_gkp.pbs` (GKP) and set:
+Edit `gadi/run_job.pbs` (cat), `gadi/run_job_gkp.pbs` (GKP), or
+`gadi/run_job_binomial.pbs` (binomial) and set:
 - `PROJECT` (PBS project code)
 - `GPU_QUEUE` (your GPU queue name)
 - modules (if needed)
@@ -42,6 +43,8 @@ Submit:
 qsub gadi/run_job.pbs
 # or
 qsub gadi/run_job_gkp.pbs
+# or
+qsub gadi/run_job_binomial.pbs
 ```
 
 Logs go to `logs/` under the repo root.

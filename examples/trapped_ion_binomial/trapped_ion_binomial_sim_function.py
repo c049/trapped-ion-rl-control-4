@@ -4,136 +4,77 @@ import jax.numpy as jnp
 import dynamiqs as dq
 
 
-def _resolve_gkp_params(
-    alpha_cat,
-    cat_parity,
-    gkp_delta=None,
-    gkp_logical=None,
-):
-    """
-    Backward-compatible parameter resolver.
-    `alpha_cat/cat_parity` were inherited from cat-state code; GKP code should
-    use `gkp_delta/gkp_logical`.
-    """
-    delta = float(alpha_cat if gkp_delta is None else gkp_delta)
-    logical = cat_parity if gkp_logical is None else gkp_logical
-    return delta, logical
+# Paper-aligned binomial code states used in this project.
+# PRX 2022 binomial example target: (sqrt(3)|3> + |9>) / 2.
+_BINOMIAL_CODE_SPECS = {
+    "s1_plus": ((0, 1.0 / np.sqrt(2.0)), (4, 1.0 / np.sqrt(2.0))),
+    "s2_plus": ((0, 0.5), (6, np.sqrt(3.0) / 2.0)),
+    # Distance-3 binomial codeword used in PRX 2022 and PRL 2024:
+    # (sqrt(3)|3> + |9>) / 2.
+    "d3_z": ((3, np.sqrt(3.0) / 2.0), (9, 0.5)),
+}
+
+_BINOMIAL_ALIASES = {
+    "binomial": "d3_z",
+    "paper": "d3_z",
+    "prx": "d3_z",
+    "distance3": "d3_z",
+    "d3": "d3_z",
+    "d3_plus": "d3_z",
+    "d3_minus": "d3_z",
+    "s2_z": "d3_z",
+    "z_s2": "d3_z",
+    "s2_minus": "d3_z",
+    "s2plus": "s2_plus",
+    "plus_s2": "s2_plus",
+    "+z_s2": "s2_plus",
+    "s1plus": "s1_plus",
+    "plus_s1": "s1_plus",
+    "+z_s1": "s1_plus",
+}
 
 
-def _gkp_basis_state(
-    delta,
-    n_boson,
-    logical="0",
-    squeeze_r=None,
-    envelope_kappa=None,
-    lattice_trunc=4,
-):
-    """
-    Approximate finite-energy square GKP logical basis state in a truncated
-    Fock space using a displaced squeezed-vacuum comb in q:
+def _resolve_binomial_code(code):
+    if code is None:
+        return "d3_z"
+    key = str(code).strip().lower()
+    if key in _BINOMIAL_CODE_SPECS:
+        return key
+    if key in _BINOMIAL_ALIASES:
+        return _BINOMIAL_ALIASES[key]
+    raise ValueError(
+        f"Unsupported binomial_code={code}. Supported: {sorted(_BINOMIAL_CODE_SPECS.keys())}"
+    )
 
-        |mu> ~ sum_s exp[-(kappa^2/2) q_s^2] D(q_s / sqrt(2)) S(r) |0>
-        q_s = (2 s + mu) sqrt(pi), mu in {0, 1}
 
-    For finite-energy symmetric approximate GKP, a common choice is kappa = delta
-    and peak squeezing r = -log(delta). We use that mapping by default unless
-    overridden.
-    """
-    logical_str = str(logical).lower()
-    if logical_str in ("0", "zero", "even"):
-        offset = 0
-    elif logical_str in ("1", "one", "odd"):
-        offset = 1
-    else:
-        raise ValueError(f"Unsupported GKP basis logical state: {logical}")
+def _binomial_state(binomial_code, n_boson, rel_phase=None):
+    code = _resolve_binomial_code(binomial_code)
+    components = list(_BINOMIAL_CODE_SPECS[code])
+    max_n = max(n for n, _ in components)
+    if max_n >= int(n_boson):
+        raise ValueError(
+            f"n_boson={n_boson} is too small for {code}; requires at least {max_n + 1}."
+        )
 
-    delta = float(delta)
-    if delta <= 0.0:
-        raise ValueError(f"GKP delta must be positive, got {delta}")
-    if squeeze_r is None:
-        # Matches the standard finite-energy scaling where peak width and
-        # envelope are controlled by the same delta parameter.
-        squeeze_r = float(-np.log(delta))
-    if envelope_kappa is None:
-        envelope_kappa = delta
-    squeeze_r = float(squeeze_r)
-    envelope_kappa = float(envelope_kappa)
+    if rel_phase is not None and len(components) >= 2:
+        n_last, coeff_last = components[-1]
+        components[-1] = (n_last, coeff_last * np.exp(1j * float(rel_phase)))
 
-    base = dq.squeeze(n_boson, squeeze_r) @ dq.fock(n_boson, 0)
     psi = None
-    for k in range(-int(lattice_trunc), int(lattice_trunc) + 1):
-        q_shift = (2 * k + offset) * np.sqrt(np.pi)
-        alpha_shift = q_shift / np.sqrt(2.0)
-        env = np.exp(-0.5 * (envelope_kappa ** 2) * (q_shift ** 2))
-        peak = dq.displace(n_boson, alpha_shift) @ base
-        psi = env * peak if psi is None else psi + env * peak
+    for n_fock, coeff in components:
+        basis = dq.fock(n_boson, int(n_fock))
+        term = coeff * basis
+        psi = term if psi is None else psi + term
     return psi.unit()
 
 
-def _gkp_state(
-    delta,
-    n_boson,
-    logical="0",
-    rel_phase=None,
-    squeeze_r=None,
-    envelope_kappa=None,
-    lattice_trunc=4,
-):
-    logical_str = str(logical).lower()
-    if logical_str in ("0", "1", "zero", "one", "even", "odd"):
-        return _gkp_basis_state(
-            delta=delta,
-            n_boson=n_boson,
-            logical=logical_str,
-            squeeze_r=squeeze_r,
-            envelope_kappa=envelope_kappa,
-            lattice_trunc=lattice_trunc,
-        )
-
-    if rel_phase is None:
-        rel_phase = 0.0 if logical_str in ("plus", "+") else np.pi
-
-    psi0 = _gkp_basis_state(
-        delta=delta,
-        n_boson=n_boson,
-        logical="0",
-        squeeze_r=squeeze_r,
-        envelope_kappa=envelope_kappa,
-        lattice_trunc=lattice_trunc,
-    )
-    psi1 = _gkp_basis_state(
-        delta=delta,
-        n_boson=n_boson,
-        logical="1",
-        squeeze_r=squeeze_r,
-        envelope_kappa=envelope_kappa,
-        lattice_trunc=lattice_trunc,
-    )
-    return (psi0 + np.exp(1j * rel_phase) * psi1).unit()
+def _binomial_support_fock_numbers(binomial_code):
+    code = _resolve_binomial_code(binomial_code)
+    return [int(n) for n, _ in _BINOMIAL_CODE_SPECS[code]]
 
 
-def gkp_target_fock_statistics(
-    delta,
-    n_boson,
-    logical="0",
-    rel_phase=None,
-    squeeze_r=None,
-    envelope_kappa=None,
-    lattice_trunc=4,
-):
-    """
-    Return lightweight diagnostics for Fock-space truncation quality of the
-    finite-energy GKP target state.
-    """
-    target = _gkp_state(
-        delta=delta,
-        n_boson=n_boson,
-        logical=logical,
-        rel_phase=rel_phase,
-        squeeze_r=squeeze_r,
-        envelope_kappa=envelope_kappa,
-        lattice_trunc=lattice_trunc,
-    )
+def binomial_target_fock_statistics(binomial_code, n_boson, rel_phase=None):
+    target = _binomial_state(binomial_code, n_boson, rel_phase=rel_phase)
     amp = np.asarray(target).reshape(-1)
     probs = np.abs(amp) ** 2
     probs = probs / float(np.sum(probs))
@@ -159,22 +100,27 @@ def _sample_points(grid_size, extent):
     return [x + 1j * y for x in axis for y in axis]
 
 
-def _gkp_focus_points():
-    # Square-GKP characteristic-function reciprocal lattice spacing.
-    # In our alpha convention, a = sqrt(pi / 2).
-    a = np.sqrt(np.pi / 2.0)
+def _binomial_focus_points(binomial_code):
+    support = _binomial_support_fock_numbers(binomial_code)
+    radii = sorted(float(np.sqrt(max(n, 0))) for n in support)
     points = [0.0 + 0.0j]
-    for m in (1, 2, 3):
-        points += [m * a + 0.0j, -m * a + 0.0j, 0.0 + 1j * m * a, 0.0 - 1j * m * a]
-    for m in (1, 2):
-        for n in (1, 2):
-            points += [
-                (m * a) + 1j * (n * a),
-                (m * a) - 1j * (n * a),
-                (-m * a) + 1j * (n * a),
-                (-m * a) - 1j * (n * a),
+    for r in radii:
+        points.extend(
+            [
+                r + 0.0j,
+                -r + 0.0j,
+                0.0 + 1j * r,
+                0.0 - 1j * r,
+                0.5 * r + 0.0j,
+                -0.5 * r + 0.0j,
+                0.0 + 0.5j * r,
+                0.0 - 0.5j * r,
             ]
-    # Keep unique values while preserving order.
+        )
+    if len(radii) >= 2:
+        r_mid = 0.5 * (radii[0] + radii[-1])
+        points.extend([r_mid + 0.0j, -r_mid + 0.0j, 0.0 + 1j * r_mid, 0.0 - 1j * r_mid])
+
     unique = []
     seen = set()
     for z in points:
@@ -248,26 +194,15 @@ def characteristic_norm(target_values, sample_area):
 
 
 def prepare_characteristic_distribution(
-    alpha_cat,
     n_boson,
     extent,
     grid_size,
-    cat_parity="0",
-    gkp_delta=None,
-    gkp_logical=None,
+    binomial_code="d3_z",
     mix_uniform=0.0,
     alpha_scale=1.0,
-    cat_phase=None,
-    gkp_squeeze_r=None,
-    gkp_envelope_kappa=None,
-    gkp_lattice_trunc=4,
+    binomial_phase=None,
+    importance_power=1.0,
 ):
-    gkp_delta, gkp_logical = _resolve_gkp_params(
-        alpha_cat=alpha_cat,
-        cat_parity=cat_parity,
-        gkp_delta=gkp_delta,
-        gkp_logical=gkp_logical,
-    )
     axis = np.linspace(-extent, extent, grid_size)
     if grid_size > 1:
         delta = float(axis[1] - axis[0])
@@ -275,19 +210,20 @@ def prepare_characteristic_distribution(
         delta = float(2.0 * extent)
     scaled_delta = delta * float(alpha_scale)
     area_element = scaled_delta * scaled_delta
-    target = _gkp_state(
-        delta=gkp_delta,
+    target = _binomial_state(
+        binomial_code=binomial_code,
         n_boson=n_boson,
-        logical=gkp_logical,
-        rel_phase=cat_phase,
-        squeeze_r=gkp_squeeze_r,
-        envelope_kappa=gkp_envelope_kappa,
-        lattice_trunc=gkp_lattice_trunc,
+        rel_phase=binomial_phase,
     )
     target_rho = target @ target.dag()
     points = [alpha_scale * (x + 1j * y) for x in axis for y in axis]
     chi_target = _target_characteristic_values(target_rho, points)
-    weights = np.abs(chi_target)
+    importance_power = float(importance_power)
+    if not np.isfinite(importance_power) or importance_power <= 0.0:
+        raise ValueError(
+            f"importance_power must be > 0 and finite, got {importance_power}"
+        )
+    weights = np.abs(chi_target) ** importance_power
     if mix_uniform > 0.0:
         weights = (1.0 - mix_uniform) * weights + mix_uniform * np.ones_like(weights)
     total = float(np.sum(weights))
@@ -311,6 +247,34 @@ def _broadcast_time_array(value, like, name):
     return arr
 
 
+def _broadcast_motional_detuning(value, like, name):
+    arr = jnp.asarray(value, dtype=jnp.float32)
+    if arr.ndim == 0:
+        return jnp.full_like(like, float(arr))
+    if arr.ndim == 1:
+        match_steps = arr.shape[0] == like.shape[-1]
+        match_batch = arr.shape[0] == like.shape[0]
+        if match_steps and match_batch:
+            raise ValueError(
+                f"{name} length is ambiguous when batch={like.shape[0]} equals n_steps={like.shape[-1]}. "
+                "Use an explicit 2D array with shape (batch, n_steps)."
+            )
+        if match_steps:
+            return jnp.broadcast_to(arr[None, :], like.shape)
+        if match_batch:
+            return jnp.broadcast_to(arr[:, None], like.shape)
+        raise ValueError(
+            f"{name} must be scalar, length {like.shape[0]}, "
+            f"length {like.shape[-1]}, or shape {like.shape}"
+        )
+    if arr.shape != like.shape:
+        raise ValueError(
+            f"{name} must be scalar, length {like.shape[0]}, "
+            f"length {like.shape[-1]}, or shape {like.shape}"
+        )
+    return arr
+
+
 _OP_CACHE = {}
 
 
@@ -328,7 +292,8 @@ def _get_ops(n_boson):
     a_dag_full = dq.tensor(eye2, a_dag)
     sigma_p_full = dq.tensor(sigma_p, eye_b)
     sigma_m_full = dq.tensor(sigma_m, eye_b)
-    ops = (a_full, a_dag_full, sigma_p_full, sigma_m_full)
+    n_full = dq.tensor(eye2, a_dag @ a)
+    ops = (a_full, a_dag_full, sigma_p_full, sigma_m_full, n_full)
     _OP_CACHE[n_boson] = ops
     return ops
 
@@ -342,6 +307,7 @@ def simulate_boson_state(
     t_step,
     n_times=None,
     return_density=False,
+    motional_detuning=0.0,
 ):
     phi_r = jnp.asarray(phi_r, dtype=jnp.float32)
     phi_b = jnp.asarray(phi_b, dtype=jnp.float32)
@@ -356,13 +322,21 @@ def simulate_boson_state(
             omega_b,
             t_step,
             n_times=n_times,
+            motional_detuning=motional_detuning,
         )
         if return_density:
             rho_boson, rho_qubit = _ptrace_boson_qubit(psi_final, n_boson)
             return psi_final[0], rho_boson[0], rho_qubit[0]
         return psi_final[0]
     psi_final = _simulate_boson_state_batch(
-        phi_r, phi_b, n_boson, omega_r, omega_b, t_step, n_times=n_times
+        phi_r,
+        phi_b,
+        n_boson,
+        omega_r,
+        omega_b,
+        t_step,
+        n_times=n_times,
+        motional_detuning=motional_detuning,
     )
     if return_density:
         rho_boson, rho_qubit = _ptrace_boson_qubit(psi_final, n_boson)
@@ -378,6 +352,7 @@ def _simulate_boson_state_batch(
     omega_b,
     t_step,
     n_times=None,
+    motional_detuning=0.0,
 ):
     phi_r = jnp.asarray(phi_r, dtype=jnp.float32)
     phi_b = jnp.asarray(phi_b, dtype=jnp.float32)
@@ -390,15 +365,21 @@ def _simulate_boson_state_batch(
 
     omega_r = _broadcast_time_array(omega_r, phi_r, "omega_r")
     omega_b = _broadcast_time_array(omega_b, phi_b, "omega_b")
+    detuning = _broadcast_motional_detuning(
+        motional_detuning,
+        phi_r,
+        "motional_detuning",
+    )
     coeff_r = 0.5 * omega_r * jnp.exp(1j * phi_r)
     coeff_b = 0.5 * omega_b * jnp.exp(1j * phi_b)
 
-    a, a_dag, sigma_p, sigma_m = _get_ops(n_boson)
+    a, a_dag, sigma_p, sigma_m, n_op = _get_ops(n_boson)
     H_r_up = dq.pwc(t_edges, coeff_r, sigma_p @ a)
     H_r_down = dq.pwc(t_edges, jnp.conj(coeff_r), sigma_m @ a_dag)
     H_b_up = dq.pwc(t_edges, coeff_b, sigma_p @ a_dag)
     H_b_down = dq.pwc(t_edges, jnp.conj(coeff_b), sigma_m @ a)
-    H = H_r_up + H_r_down + H_b_up + H_b_down
+    H_det = dq.pwc(t_edges, detuning, n_op)
+    H = H_r_up + H_r_down + H_b_up + H_b_down + H_det
 
     psi0 = dq.tensor(dq.basis(2, 0), dq.fock(n_boson, 0))
     tsave = jnp.array([t_duration], dtype=jnp.float32)
@@ -434,38 +415,18 @@ def characteristic_grid(rho, xvec, yvec):
 
 
 def select_wigner_points(
-    alpha_cat,
     n_boson,
     extent,
     grid_size,
     top_k,
-    cat_parity="0",
-    gkp_delta=None,
-    gkp_logical=None,
-    cat_phase=None,
-    gkp_squeeze_r=None,
-    gkp_envelope_kappa=None,
-    gkp_lattice_trunc=4,
+    binomial_code="d3_z",
+    binomial_phase=None,
 ):
     """
-    Select fixed phase-space points where |W_target| is largest.
+    Select a fixed set of phase-space points where |W_target| is largest.
     """
-    gkp_delta, gkp_logical = _resolve_gkp_params(
-        alpha_cat=alpha_cat,
-        cat_parity=cat_parity,
-        gkp_delta=gkp_delta,
-        gkp_logical=gkp_logical,
-    )
     axis = np.linspace(-extent, extent, grid_size)
-    target = _gkp_state(
-        delta=gkp_delta,
-        n_boson=n_boson,
-        logical=gkp_logical,
-        rel_phase=cat_phase,
-        squeeze_r=gkp_squeeze_r,
-        envelope_kappa=gkp_envelope_kappa,
-        lattice_trunc=gkp_lattice_trunc,
-    )
+    target = _binomial_state(binomial_code, n_boson, rel_phase=binomial_phase)
     w_target = wigner_grid(target @ target.dag(), axis, axis)
     flat = np.abs(w_target).ravel()
     if top_k >= flat.size:
@@ -482,7 +443,7 @@ def select_wigner_points(
     return points
 
 
-def trapped_ion_gkp_sim(
+def trapped_ion_binomial_sim(
     phi_r,
     phi_b,
     amp_r=None,
@@ -491,12 +452,9 @@ def trapped_ion_gkp_sim(
     omega=2 * np.pi * 0.002,
     t_step=1.0,
     n_times=None,
-    alpha_cat=0.301,
-    cat_parity="0",
-    gkp_delta=None,
-    gkp_logical=None,
-    cat_phase=None,
-    sample_mode="gkp",
+    binomial_code="d3_z",
+    binomial_phase=None,
+    sample_mode="binomial",
     sample_grid=5,
     sample_extent=2.5,
     n_sample_points=30,
@@ -513,21 +471,15 @@ def trapped_ion_gkp_sim(
     characteristic_objective="overlap_real",
     reward_norm=None,
     return_density=False,
-    gkp_squeeze_r=None,
-    gkp_envelope_kappa=None,
-    gkp_lattice_trunc=4,
+    motional_detuning=0.0,
 ):
     """
     Simulate trapped-ion state preparation with RSB/BSB controls and return
     a measurement-based reward derived from sampled characteristic values.
+    `motional_detuning` adds a quasi-static (or time-varying) term
+    delta(t) * a^\dagger a on the motional mode.
     """
     rng = np.random.default_rng(seed)
-    gkp_delta, gkp_logical = _resolve_gkp_params(
-        alpha_cat=alpha_cat,
-        cat_parity=cat_parity,
-        gkp_delta=gkp_delta,
-        gkp_logical=gkp_logical,
-    )
 
     if amp_r is None:
         omega_r = omega
@@ -549,6 +501,7 @@ def trapped_ion_gkp_sim(
             t_step=t_step,
             n_times=n_times,
             return_density=True,
+            motional_detuning=motional_detuning,
         )
     else:
         psi_full = simulate_boson_state(
@@ -560,23 +513,20 @@ def trapped_ion_gkp_sim(
             t_step=t_step,
             n_times=n_times,
             return_density=False,
+            motional_detuning=motional_detuning,
         )
         rho_boson = None
 
-    target = _gkp_state(
-        delta=gkp_delta,
+    target = _binomial_state(
+        binomial_code=binomial_code,
         n_boson=n_boson,
-        logical=gkp_logical,
-        rel_phase=cat_phase,
-        squeeze_r=gkp_squeeze_r,
-        envelope_kappa=gkp_envelope_kappa,
-        lattice_trunc=gkp_lattice_trunc,
+        rel_phase=binomial_phase,
     )
     target_rho = target @ target.dag()
 
     if sample_points is None:
-        if sample_mode in ("gkp", "cat"):
-            sample_points = _gkp_focus_points()
+        if sample_mode in ("binomial", "focus"):
+            sample_points = _binomial_focus_points(binomial_code)
         elif sample_mode == "random":
             sample_points = _random_points(n_sample_points, sample_extent, rng)
         else:
@@ -625,10 +575,16 @@ def trapped_ion_gkp_sim(
             # Importance-corrected MSE: avoid double-counting when points are
             # already sampled from P(alpha).
             num = np.mean((np.abs(meas - target_values) ** 2) * inv_p)
-            reward = float(reward_scale * (1.0 - num / norm))
+            den = np.mean((np.abs(target_values) ** 2) * inv_p)
+            if not np.isfinite(den) or den <= 0.0:
+                den = 1.0
+            reward = float(reward_scale * (1.0 - num / den))
         elif characteristic_objective == "nmse_exp":
             num = np.mean((np.abs(meas - target_values) ** 2) * inv_p)
-            reward = float(reward_scale * np.exp(-num / norm))
+            den = np.mean((np.abs(target_values) ** 2) * inv_p)
+            if not np.isfinite(den) or den <= 0.0:
+                den = 1.0
+            reward = float(reward_scale * np.exp(-num / den))
         elif characteristic_objective == "overlap_abs":
             reward = float(reward_scale * np.abs(overlap) / norm)
         else:
@@ -661,7 +617,7 @@ def trapped_ion_gkp_sim(
     return reward, fidelity, rho_boson, target_rho
 
 
-def trapped_ion_gkp_sim_batch(
+def trapped_ion_binomial_sim_batch(
     phi_r,
     phi_b,
     amp_r=None,
@@ -670,12 +626,9 @@ def trapped_ion_gkp_sim_batch(
     omega=2 * np.pi * 0.002,
     t_step=1.0,
     n_times=None,
-    alpha_cat=0.301,
-    cat_parity="0",
-    gkp_delta=None,
-    gkp_logical=None,
-    cat_phase=None,
-    sample_mode="gkp",
+    binomial_code="d3_z",
+    binomial_phase=None,
+    sample_mode="binomial",
     sample_grid=5,
     sample_extent=2.5,
     n_sample_points=30,
@@ -692,17 +645,9 @@ def trapped_ion_gkp_sim_batch(
     characteristic_objective="overlap_real",
     reward_norm=None,
     return_density=False,
-    gkp_squeeze_r=None,
-    gkp_envelope_kappa=None,
-    gkp_lattice_trunc=4,
+    motional_detuning=0.0,
 ):
     rng = np.random.default_rng(seed)
-    gkp_delta, gkp_logical = _resolve_gkp_params(
-        alpha_cat=alpha_cat,
-        cat_parity=cat_parity,
-        gkp_delta=gkp_delta,
-        gkp_logical=gkp_logical,
-    )
 
     phi_r = np.asarray(phi_r, dtype=float)
     phi_b = np.asarray(phi_b, dtype=float)
@@ -711,14 +656,50 @@ def trapped_ion_gkp_sim_batch(
 
     force_serial = os.environ.get("QCRL_SERIAL_SIM", "0") == "1"
     if force_serial and phi_r.ndim > 1 and phi_r.shape[0] > 1:
+        def _serial_detuning_sample(motion_detune, index, n_batch, n_steps):
+            arr = np.asarray(motion_detune, dtype=float)
+            if arr.ndim == 0:
+                return float(arr)
+            if arr.ndim == 1:
+                match_batch = arr.shape[0] == n_batch
+                match_steps = arr.shape[0] == n_steps
+                if match_batch and match_steps:
+                    raise ValueError(
+                        "motional_detuning length is ambiguous when "
+                        f"batch={n_batch} equals n_steps={n_steps}. "
+                        "Use an explicit 2D array with shape "
+                        f"({n_batch}, {n_steps})."
+                    )
+                if match_batch:
+                    return float(arr[index])
+                if match_steps:
+                    return arr.copy()
+                raise ValueError(
+                    "motional_detuning must be scalar, length "
+                    f"{n_batch}, length {n_steps}, or shape ({n_batch}, {n_steps})"
+                )
+            if arr.shape == (n_batch, n_steps):
+                return arr[index].copy()
+            raise ValueError(
+                "motional_detuning must be scalar, length "
+                f"{n_batch}, length {n_steps}, or shape ({n_batch}, {n_steps})"
+            )
+
         rewards = []
         fidelities = []
         rho_list = []
         target_rho = None
+        n_batch, n_steps = phi_r.shape
         for ii in range(phi_r.shape[0]):
             seed_i = None if seed is None else int(rng.integers(1, 2**31 - 1))
+            motional_detuning_i = _serial_detuning_sample(
+                motional_detuning,
+                ii,
+                n_batch,
+                n_steps,
+            )
             if return_details:
-                r_i, f_i, rho_i, target_rho = trapped_ion_gkp_sim(
+                r_i, f_i, rho_i, target_rho = trapped_ion_binomial_sim(
                     phi_r[ii],
                     phi_b[ii],
                     amp_r=None if amp_r is None else np.asarray(amp_r, dtype=float)[ii],
@@ -727,10 +708,8 @@ def trapped_ion_gkp_sim_batch(
                     omega=omega,
                     t_step=t_step,
                     n_times=n_times,
-                    alpha_cat=gkp_delta,
-                    cat_parity=gkp_logical,
-                    gkp_delta=gkp_delta,
-                    gkp_logical=gkp_logical,
+                    binomial_code=binomial_code,
+                    binomial_phase=binomial_phase,
                     sample_mode=sample_mode,
                     sample_grid=sample_grid,
                     sample_extent=sample_extent,
@@ -748,16 +727,14 @@ def trapped_ion_gkp_sim_batch(
                     characteristic_objective=characteristic_objective,
                     reward_norm=reward_norm,
                     return_density=return_density,
-                    gkp_squeeze_r=gkp_squeeze_r,
-                    gkp_envelope_kappa=gkp_envelope_kappa,
-                    gkp_lattice_trunc=gkp_lattice_trunc,
+                    motional_detuning=motional_detuning_i,
                 )
                 rewards.append(r_i)
                 fidelities.append(f_i)
                 if return_density:
                     rho_list.append(rho_i)
             else:
-                r_i = trapped_ion_gkp_sim(
+                r_i = trapped_ion_binomial_sim(
                     phi_r[ii],
                     phi_b[ii],
                     amp_r=None if amp_r is None else np.asarray(amp_r, dtype=float)[ii],
@@ -766,10 +743,8 @@ def trapped_ion_gkp_sim_batch(
                     omega=omega,
                     t_step=t_step,
                     n_times=n_times,
-                    alpha_cat=gkp_delta,
-                    cat_parity=gkp_logical,
-                    gkp_delta=gkp_delta,
-                    gkp_logical=gkp_logical,
+                    binomial_code=binomial_code,
+                    binomial_phase=binomial_phase,
                     sample_mode=sample_mode,
                     sample_grid=sample_grid,
                     sample_extent=sample_extent,
@@ -787,9 +762,7 @@ def trapped_ion_gkp_sim_batch(
                     characteristic_objective=characteristic_objective,
                     reward_norm=reward_norm,
                     return_density=return_density,
-                    gkp_squeeze_r=gkp_squeeze_r,
-                    gkp_envelope_kappa=gkp_envelope_kappa,
-                    gkp_lattice_trunc=gkp_lattice_trunc,
+                    motional_detuning=motional_detuning_i,
                 )
                 rewards.append(r_i)
 
@@ -821,6 +794,7 @@ def trapped_ion_gkp_sim_batch(
             t_step=t_step,
             n_times=n_times,
             return_density=True,
+            motional_detuning=motional_detuning,
         )
     else:
         psi_full = simulate_boson_state(
@@ -832,23 +806,20 @@ def trapped_ion_gkp_sim_batch(
             t_step=t_step,
             n_times=n_times,
             return_density=False,
+            motional_detuning=motional_detuning,
         )
         rho_boson = None
 
-    target = _gkp_state(
-        delta=gkp_delta,
+    target = _binomial_state(
+        binomial_code=binomial_code,
         n_boson=n_boson,
-        logical=gkp_logical,
-        rel_phase=cat_phase,
-        squeeze_r=gkp_squeeze_r,
-        envelope_kappa=gkp_envelope_kappa,
-        lattice_trunc=gkp_lattice_trunc,
+        rel_phase=binomial_phase,
     )
     target_rho = target @ target.dag()
 
     if sample_points is None:
-        if sample_mode in ("gkp", "cat"):
-            sample_points = _gkp_focus_points()
+        if sample_mode in ("binomial", "focus"):
+            sample_points = _binomial_focus_points(binomial_code)
         elif sample_mode == "random":
             sample_points = _random_points(n_sample_points, sample_extent, rng)
         else:
@@ -896,10 +867,14 @@ def trapped_ion_gkp_sim_batch(
         inv_p = 1.0 / p
         if characteristic_objective == "nmse":
             num = jnp.mean((jnp.abs(meas - target_vals) ** 2) * inv_p[None, :], axis=1)
-            reward = reward_scale * (1.0 - num / norm)
+            den = jnp.mean((jnp.abs(target_vals) ** 2) * inv_p)
+            den = jnp.where(jnp.isfinite(den) & (den > 0), den, 1.0)
+            reward = reward_scale * (1.0 - num / den)
         elif characteristic_objective == "nmse_exp":
             num = jnp.mean((jnp.abs(meas - target_vals) ** 2) * inv_p[None, :], axis=1)
-            reward = reward_scale * jnp.exp(-num / norm)
+            den = jnp.mean((jnp.abs(target_vals) ** 2) * inv_p)
+            den = jnp.where(jnp.isfinite(den) & (den > 0), den, 1.0)
+            reward = reward_scale * jnp.exp(-num / den)
         elif characteristic_objective == "overlap_abs":
             reward = reward_scale * jnp.abs(overlap) / norm
         else:
@@ -939,12 +914,3 @@ def trapped_ion_gkp_sim_batch(
     target_op = dq.tensor(dq.eye(2), target_rho)
     fidelity = np.array(dq.expect(target_op, psi_full).real, dtype=float)
     return reward, fidelity, rho_boson, target_rho
-
-
-# Backward-compatible aliases for older naming.
-def trapped_ion_cat_sim(*args, **kwargs):
-    return trapped_ion_gkp_sim(*args, **kwargs)
-
-
-def trapped_ion_cat_sim_batch(*args, **kwargs):
-    return trapped_ion_gkp_sim_batch(*args, **kwargs)
