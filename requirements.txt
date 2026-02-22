@@ -1,9 +1,21 @@
-matplotlib==3.4.3
-numpy==1.18.5
+# Core numerics / plotting
+numpy==1.26.4
+scipy==1.11.4
+matplotlib==3.8.2
+h5py==3.10.0
+pillow==10.2.0
+
+# PPO server (TF-Agents)
+tensorflow==2.15.1
+tf-agents==0.19.0
+tensorflow-probability==0.23.0
+tensorboard==2.15.1
+
+# Simulation client (dynamiqs + JAX)
+# For GPU JAX, install with the CUDA wheel and override these pins.
+jax==0.4.38
+jaxlib==0.4.38
+dynamiqs==0.3.4
+
+# QuTiP-based pi-pulse examples
 qutip==4.7.1
-tensorboard==2.11.2
-tensorboard_plugin_profile==2.3.0
-tensorflow==2.4.0
-tensorflow-probability==0.11.0
-tf-agents==0.6.0
-scipy==1.4.1

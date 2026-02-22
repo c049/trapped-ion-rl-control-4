@@ -1,100 +1,155 @@
-# Trapped-Ion RL Control
+# Trapped-Ion RL Control (dynamiqs + PPO server–client)
 
-This project focuses on **model-free reinforcement learning for trapped-ion quantum control**. The RL agent (PPO/TF-Agents) learns red/blue sideband pulse sequences to prepare **bosonic cat states** of the motional mode. Rewards are computed from sampled **Wigner-function parity measurements**, while **fidelity** is tracked for evaluation and final reporting.
+This repository implements **model-free, measurement-style reinforcement learning** for
+**trapped-ion spin–motion quantum control**. A TF-Agents PPO server proposes piecewise-
+constant red/blue sideband pulse parameters, and a dynamiqs + JAX simulation client
+executes the dynamics and returns measurement-style rewards computed from sampled
+phase-space characteristic-function values (with optional Wigner/parity fallbacks).
 
-The implementation follows a measurement-based reward design, compares reward against fidelity during evaluation, and visualizes the final phase-space distributions and pulse sequences.
+Primary pipelines:
+- `examples/trapped_ion_cat/` — cat-state preparation
+- `examples/trapped_ion_gkp/` — GKP state preparation (paper-aligned pipeline)
+- `examples/trapped_ion_binomial/` — binomial code state preparation, including
+  **quasi-static dephasing-robust training**
 
-## Requirements
-The project was tested with the conda environment defined in `qcrl-server-tf240.yml` (TensorFlow 2.4.0 and TF-Agents 0.6.0). CPU-only setups work, but training may be slower.
+Additional small examples:
+- `examples/pi_pulse/`, `examples/pi_pulse_oct_style/` (QuTiP-based)
 
-## Installation
-Create and activate the conda environment:
-```sh
-conda env create -f qcrl-server-tf240.yml
-conda activate qcrl-server  # or your env name if you created a custom one
+## Architecture (server–client)
+
+```mermaid
+flowchart LR
+  subgraph PPO_Server["PPO Server (TF-Agents)"]
+    A["ActorDistributionNetwork\n(policy over pulse parameters)"]
+    B["PPO update loop\n(on-policy batches)"]
+    L["H5 logging\n(actions, rewards, policy stats)"]
+  end
+
+  subgraph Remote["Remote Env (TCP pickle socket)"]
+    S["Server socket\n(sends action batches)"]
+    C["Client socket\n(returns rewards)"]
+  end
+
+  subgraph Client["Simulation Client (dynamiqs + JAX)"]
+    H["PWC Hamiltonian\n(RSB/BSB pulses)"]
+    SIM["dynamiqs sesolve\n(final_state only)"]
+    R["Reward from sampled\ncharacteristic function"]
+    E["Eval fidelity + plots + CSV logs"]
+    O["Outputs\n(final_fidelity, plots, sweeps)"]
+  end
+
+  A --> B --> S --> C --> H --> SIM --> R --> C
+  SIM --> E --> O
+  B --> L
 ```
-Install the package in editable mode:
-```sh
+
+## Environments
+
+Two stacks are used in practice:
+- **PPO server**: TensorFlow + TF-Agents
+- **Simulation client**: dynamiqs + JAX
+
+You can run with a single Python environment (CPU) or split server/client into
+separate envs (recommended on clusters). Gadi helper scripts are in `gadi/`.
+
+### Option A: Gadi setup (recommended on HPC)
+
+Follow `gadi/README_GADI.md` and use `gadi/setup_envs.sh` to create two venvs:
+- `venv_tf` (TF/TF-Agents server)
+- `venv_dq` (dynamiqs/JAX client)
+
+Then run an example with:
+```bash
+SERVER_PYTHON=/path/to/venv_tf/bin/python \
+CLIENT_PYTHON=/path/to/venv_dq/bin/python \
+POST_PYTHON=/path/to/venv_dq/bin/python \
+bash run_with_logs.sh
+```
+
+### Option B: Local single-env (CPU)
+
+```bash
+pip install -r requirements.txt
 pip install -e .
 ```
 
-## Run the trapped-ion cat-state example
-Open two terminals (local or VSCode remote), and run both from the same repo checkout (don’t mix local and remote).
+If you want GPU JAX locally, install JAX with the CUDA wheel per the JAX
+instructions and override the `jax/jaxlib` entries in `requirements.txt`.
 
-In both terminals:
-```sh
-cd /path/to/quantum_control_rl_server
-source /root/miniconda3/etc/profile.d/conda.sh
-conda activate qcrl-server  # or your env name if you created a custom one
-# If you're on a headless/remote machine, this avoids Matplotlib config issues:
-export MPLCONFIGDIR=/tmp/matplotlib
-```
+## Quick runs
 
-Terminal A (server):
-```sh
+Cat state:
+```bash
 cd examples/trapped_ion_cat
-python trapped_ion_cat_training_server.py
+bash run_with_logs.sh
 ```
 
-Terminal B (client):
-```sh
-cd examples/trapped_ion_cat
-python trapped_ion_cat_client.py
+GKP:
+```bash
+cd examples/trapped_ion_gkp
+bash run_with_logs.sh
 ```
 
-After training finishes, generate plots from the latest `.h5` file:
-```sh
-cd examples/trapped_ion_cat
-python parse_trapped_ion_cat_data.py
+Binomial:
+```bash
+cd examples/trapped_ion_binomial
+bash run_with_logs.sh
 ```
 
-Optional (plot final pulse sequences):
-```sh
-cd examples/trapped_ion_cat
-python plot_trapped_ion_cat_pulses.py
-```
+Each `run_with_logs.sh` launches server + client, writes `*.h5` logs, then
+parses plots and metrics into `outputs/`.
 
-## Outputs
-Plots and evaluation artifacts are saved under `examples/trapped_ion_cat/outputs/` (for example: `training_curve.png`, `eval_fidelity_curve.png`, `pulse_sequences.png`, `wigner_target_vs_final.png`, and `final_fidelity.txt`). These files are tracked in this repository.
+## Dephasing-robust training (binomial)
 
-## Code map (trapped-ion focus)
+The binomial pipeline supports **quasi-static detuning robustness**:
+- `H_total = H_rsb/bsb + delta * n_hat`
+- `delta ~ Uniform[-0.05 * Omega, +0.05 * Omega]`
 
-Core RL server (`quantum_control_rl_server/`):
-- `PPO.py`: PPO training loop (TF-Agents) used by the training server.
-- `dynamic_episode_driver_sim_env.py`: builds a simulated TF-Agents driver and wraps the environment for batch collection.
-- `tf_env.py`: base TF-Agents environment; communicates actions and rewards via remote client.
-- `tf_env_wrappers.py`: action wrapper (scaling, scripted actions, optional residual learning).
-- `remote_env_tools.py`: TCP/IP pickle socket utilities for server/client communication.
-- `h5log.py`: writes actions, rewards, and policy distributions into `.h5` logs.
-- `version_helper.py`: TF-Agents version compatibility shim.
-- `__init__.py`: package marker.
+Key environment variables (see `examples/trapped_ion_binomial/README.md` for full list):
+- `ROBUST_TRAINING=1`
+- `DEPHASE_MODEL=quasi_static`
+- `DEPHASE_DETUNING_FRAC=0.05`
+- `DEPHASE_NOISE_SAMPLES_TRAIN`, `DEPHASE_NOISE_SAMPLES_EVAL`,
+  `DEPHASE_NOISE_SAMPLES_REFINE`
+- `ROBUST_NOMINAL_FID_FLOOR`, `ROBUST_FLOOR_PENALTY`
+- `ROBUST_COMPARE_BASELINE_NPZ` (generate robust-vs-baseline sweep)
 
-Trapped-ion example (`examples/trapped_ion_cat/`):
-- `trapped_ion_cat_training_server.py`: defines the RL task (actions, scales, PPO settings) and launches the server.
-- `trapped_ion_cat_client.py`: runs the simulation, computes measurement-based rewards, logs fidelity, and writes final plots.
-- `trapped_ion_cat_sim_function.py`: QuTiP simulation of red/blue sideband dynamics, cat-state targets, Wigner sampling, and reward computation.
-- `parse_trapped_ion_cat_data.py`: parses `.h5` logs and `eval_fidelity.csv`, then generates training/eval plots.
-- `plot_trapped_ion_cat_pulses.py`: reads final policy parameters from `.h5` and plots pulse sequences.
+Outputs in robust mode:
+- `outputs/dephasing_sweep_robust.csv/png`
+- `outputs/dephasing_compare.csv/png` (when a baseline pulse is provided)
+- `eval_robust_metrics.csv` + `final_robust_score.txt`
 
-Trapped-ion binomial example (`examples/trapped_ion_binomial/`):
-- `trapped_ion_binomial_training_server.py`: PPO training server.
-- `trapped_ion_binomial_client.py`: remote simulation client and final refinement for binomial targets.
-- `trapped_ion_binomial_sim_function.py`: trapped-ion simulator and binomial target/characteristic utilities.
-- `run_with_logs.sh`: one-command launcher for server + client + plotting.
+## Outputs & logs
 
-Trapped-ion GKP example (`examples/trapped_ion_gkp/`):
-- `README.md`: full run guide and recommended GKP profile.
+- H5 logs from the PPO server: `examples/*/*.h5`
+- Eval curves: `examples/*/eval_fidelity.csv`
+- Final plots/metrics: `examples/*/outputs/`
+- PBS logs on Gadi: `logs/`
 
-Data/artifacts:
-- `examples/trapped_ion_cat/*.h5`: training logs written by the server.
-- `examples/trapped_ion_cat/eval_fidelity.csv`: evaluation fidelity history written by the client.
-- `examples/trapped_ion_cat/outputs/`: stored plots and final-state artifacts.
+## Code map
 
-Repo support files:
-- `setup.py`: package metadata for editable installs.
-- `requirements.txt`: Python package list (if you prefer pip over conda).
-- `qcrl-server-tf240.yml`: conda environment specification used in this project.
+Core server (`quantum_control_rl_server/`):
+- `PPO.py`: PPO loop (TF-Agents)
+- `dynamic_episode_driver_sim_env.py`: TF-Agents driver wrapper
+- `tf_env.py`: TF-Agents environment (remote client)
+- `tf_env_wrappers.py`: action scaling and wrappers
+- `remote_env_tools.py`: socket utilities
+- `h5log.py`: H5 logging
 
+Main examples:
+- `examples/trapped_ion_cat/` (dynamiqs + characteristic/Wigner rewards)
+- `examples/trapped_ion_gkp/` (paper-aligned GKP pipeline)
+- `examples/trapped_ion_binomial/` (binomial + dephasing-robust training)
+- `examples/pi_pulse/`, `examples/pi_pulse_oct_style/` (QuTiP-based)
+
+## References
+
+Reference PDFs are stored at repo root for convenience:
+- `Matsos et al. - 2024 - Robust and Deterministic Preparation of Bosonic Lo_副本.pdf`
+- `PhysRevX.12.011059_副本.pdf`
+- `悉尼大学 2_副本.pdf`
+- `文字记录：悉尼大学 2025年11月14日.pdf`
 
 ## License
+
 See `LICENSE`.
